@@ -178,7 +178,11 @@ size-unknown items) on the card itself, and the image fills it with
 failed image becomes a same-size "couldn't load" placeholder (its Source
 page / Full image links still work) instead of disappearing or collapsing.
 If a full image stalls (see below), it times out after 15 s and falls
-through the alternates. The page is fluid full-width — no fixed container
+through the alternates. Clicking an image opens the full image in a new
+tab — the image itself is the link, and that never changes. The Source /
+Full image / ♡ buttons live in a row overlaid at the bottom of the image
+and only appear while you hover (or tab through) a card, so the grid stays
+clean; on touch devices, which have no hover, the row is always visible.
 — so on a wide monitor the masonry just adds more ~300px columns instead
 of leaving empty margins.
 
@@ -190,7 +194,7 @@ proxy does NOT change the egress IP, so it can't dodge an IP-based block.
 
 ## Favorites
 
-Every card has a ♡ button in its link row. Click it to save that wallpaper
+Every card has a ♡ button in its link row (hover the card to reveal it). Click it to save that wallpaper
 — the heart fills (♥) and the item is stored in this browser's
 localStorage under `wms.favs` (thumb, full image, source page, size,
 source, date and score — enough to re-render the card without
@@ -305,6 +309,20 @@ filled heart. Everything is local-only: no account, no server, no export.
   headers so browsers can cache proxied images; WallpaperCave's category
   URL is guessed first (2 fetches → 1); sort changes render in ~1 ms
   instead of ~13 ms in the test harness.
+- "Full image" opened a small image (v5.1, field report 2026-11-15): a
+  Safebooru card's Full image link opened a 177x250 thumbnail. Cause: when
+  the full image stalled and a smaller alternate loaded, the card's links
+  were retargeted to whatever had loaded — so the tiny preview became the
+  "Full image" target. Fix: the links are never retargeted anymore. The
+  fallback chain only changes what is DISPLAYED in the card; Source /
+  Full image always point at the full URL (and a direct navigation has no
+  15 s probe timeout, so a slow full file still loads in its own tab).
+  Regression test B7 in the QA harness covers it.
+- Buttons always visible (v5.1): the Source / Full image / ♡ row under
+  every card was visual noise. It is now an overlay at the bottom of the
+  image that fades in on hover (or keyboard focus) and is hidden otherwise
+  — and hidden means unclickable, so it can never steal the click that
+  opens the full image. Touch devices keep the row always visible.
 
 ## Project layout
 

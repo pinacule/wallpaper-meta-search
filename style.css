@@ -461,6 +461,7 @@ code {
 }
 .results:empty { display: none; }
 .card {
+  position: relative;
   break-inside: avoid;
   margin-bottom: 20px;
   background: var(--panel);
@@ -496,8 +497,8 @@ code {
 .card:hover .thumb img { transform: scale(1.045); }
 /* Shown when every URL for a card failed (see markImageFailed in app.js):
    same reserved box, no removal, no jump — the card's links keep working.
-   pointer-events:none so a click still opens the anchor's (retargeted)
-   full-image link. Badges sit above it (z-index 2). */
+   pointer-events:none so a click still opens the anchor's full-image
+   link. Badges sit above it (z-index 2). */
 .img-placeholder {
   position: absolute;
   inset: 0;
@@ -542,7 +543,32 @@ code {
 }
 .badge-res { left: 10px; }
 .badge-src { right: 10px; background: rgba(109, 124, 255, .8); }
-.card .meta { padding: 11px 12px 12px; font-size: .88rem; }
+/* Source / Full image / heart row: an overlay at the bottom of the image,
+   shown only while hovering (or tabbing through) the card. The image itself
+   stays one big link to the full image — left-clicking it opens the full
+   image, buttons or no buttons. */
+.card .meta {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  padding: 30px 12px 12px;
+  font-size: .88rem;
+  background: linear-gradient(to top, rgba(0, 0, 0, .72), rgba(0, 0, 0, 0));
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .15s ease;
+}
+.card .meta a, .card .meta button { pointer-events: none; }
+.card:hover .meta, .card:focus-within .meta { opacity: 1; }
+.card:hover .meta a, .card:hover .meta button,
+.card:focus-within .meta a, .card:focus-within .meta button { pointer-events: auto; }
+@media (hover: none) {
+  /* Touch devices have no hover to reveal the row with. */
+  .card .meta { opacity: 1; }
+  .card .meta a, .card .meta button { pointer-events: auto; }
+}
 .card .links { display: flex; gap: 8px; }
 .card .links a {
   flex: 1;

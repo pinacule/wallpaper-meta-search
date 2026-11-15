@@ -577,14 +577,6 @@ function probeUrl(url, done) {
   };
 }
 
-// Retarget a card's links to the URL that actually loaded, so "Full image"
-// opens the working image instead of the dead one.
-function retargetCardLinks(img, url) {
-  const card = img.closest(".card");
-  if (!card) return;
-  for (const a of card.querySelectorAll("a.thumb, a.full-link")) a.href = url;
-}
-
 // Total failure: show a fixed-height placeholder of the SAME reserved size
 // (the anchor keeps its aspect-ratio, the img stays in the layout box but
 // hidden, so nothing moves and nothing disappears). The card's links keep
@@ -631,7 +623,6 @@ function loadFullImage(img) {
     img.src = img.dataset.full;
     img.style.visibility = "";
     img.dataset.state = "full";
-    retargetCardLinks(img, img.dataset.full);
     return;
   }
   let i = 0;
@@ -654,7 +645,6 @@ function loadFullImage(img) {
         img.src = url;
         img.style.visibility = "";
         img.dataset.state = "full";
-        retargetCardLinks(img, url);
       } else {
         tryNext();
       }
