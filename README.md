@@ -122,7 +122,24 @@ per-proxy errors.
 The Order dropdown next to Min. resolution re-sorts the already-fetched
 results instantly — no re-search:
 
-- **Largest first** (default) — pixel area, largest first.
+- **Best first** (default) — by community popularity. The signal per
+  source, verified live 2026-11-15 for "code geass":
+  | Source | Signal | Sample |
+  |---|---|---|
+  | Danbooru | `score` (upvotes − downvotes) | median 17, max 207 over 100 posts |
+  | Wallhaven | `favorites` (users who saved it, not passive views) | median 12, max 44 over 24 results |
+  | Safebooru | none — its `score` field is null for ~88% of posts and 1 for the rest, so it carries no ranking information |
+  | Wallpapers.com, WallpaperCave, AlphaCoders, Zerochan | none — their search pages show no popularity number |
+  The scale problem: Danbooru scores and Wallhaven favorites run on
+  different scales (207 vs 44 at the top for the same query), so raw
+  numbers aren't compared across sources. Instead each item is ranked by
+  log10(1 + score), normalised by the best log-score within its own
+  source's fetched set — each source's best item reads as 1.0, so the top
+  of the list mixes the best of every source instead of burying the
+  smaller-voting community. Ties break by raw score, then by size.
+  Items with no signal (Safebooru, the scraped sites, and anything with
+  a score of 0) sort after all scored items, in arrival order.
+- **Largest first** — pixel area, largest first.
 - **Newest first** — Danbooru and Wallhaven items carry their upload date;
   newest dated items first, then items with no date (Safebooru's API returns
   no upload date, and the scraped sources — Wallpapers.com, WallpaperCave,
@@ -137,7 +154,9 @@ The grid is a masonry collage: every image keeps its original aspect ratio
 (no 16:9 cropping) and is shown at full resolution, lazy-loaded, with the
 layout space reserved from its known dimensions so the page doesn't jump as
 images arrive. If a full image fails to load (hotlink protection, dead file),
-the card falls back to its smaller thumbnail instead of breaking.
+the card falls back to its smaller thumbnail instead of breaking. The page
+is fluid full-width — no fixed container — so on a wide monitor the masonry
+just adds more ~300px columns instead of leaving empty margins.
 
 ## Bugs fixed in this version
 
@@ -167,6 +186,28 @@ the card falls back to its smaller thumbnail instead of breaking.
 - Failure pills hid the real cause: any "Failed to fetch" was shortened to
   "proxy unreachable", so a 503, a 429 and a dead local proxy all looked
   identical. The pill now shows the HTTP status when the chain knows one.
+- Broken images (v4): many cards showed no image at all — just the two
+  buttons on a black box. The constructed "full image" URLs were checked
+  live and are correct (Wallpapers.com `/images/hd/` and AlphaCoders
+  prefix-stripped originals: 40/40 and 29/29 HTTP 200), so the failures
+  were load failures, not bad URLs — a search pulls ~150–250 MB of
+  full-resolution images at once (one AlphaCoders PNG is 26 MB), and the
+  v3 fallback listener attached after `innerHTML` could miss a fast
+  failure entirely. Fixes: every item now carries an ordered fallback
+  list (`alts` — smaller versions of the same image from the same source,
+  e.g. Danbooru large/preview, Safebooru sample/preview, Wallpapers.com
+  thumbnail, Zerochan 240 thumb; AlphaCoders also tries the `.png`
+  variant when the original was guessed as `.jpg` from a `.webp` thumb);
+  the card `<img>` calls `imgFallback(this)` inline via `onerror`, so no
+  failure can slip past the listener; the failed URL gets one delayed retry
+  (CDNs 503 in bursts under bulk load — two AlphaCoders thumbs 503'd in one
+  check and 200'd in the next); a fallback that loads retargets the
+  card's "Full image" links to the working URL; when every URL for an
+  item fails, the card is removed from the grid (and the result total
+  updated) instead of sitting there empty. Items with unknown size
+  (Wallpapers.com, AlphaCoders) now reserve a 4:3 box instead of
+  collapsing to just buttons, and images send no Referer
+  (`referrerpolicy="no-referrer"`) to dodge hotlink blocks.
 
 ## Project layout
 

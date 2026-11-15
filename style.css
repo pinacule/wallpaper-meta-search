@@ -44,10 +44,14 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   outline-offset: 2px;
 }
 
+/* Fluid full-width page: no max-width cap — the container stretches to the
+   viewport with side padding that grows a little on wide screens (capped at
+   48px so ultrawide doesn't glue content to the edges). The masonry below
+   keeps its columns ~300px wide and just adds more of them as the viewport
+   grows, so nothing ever gets absurdly wide or tiny. */
 .page {
-  max-width: 1440px;
   margin: 0 auto;
-  padding: 20px clamp(16px, 3vw, 36px) 48px;
+  padding: 20px clamp(16px, 2.5vw, 48px) 48px;
 }
 
 /* ---------- Top bar ---------- */
@@ -344,6 +348,9 @@ select:hover { border-color: var(--accent); }
 .settings-field input {
   display: block;
   width: 100%;
+  /* Inputs are single-line URLs/keys — cap their width so they don't become
+     a 3-metre text field on an ultrawide monitor now that .page is fluid. */
+  max-width: 720px;
   margin-top: 6px;
   padding: 10px 12px;
   font: inherit;
@@ -444,7 +451,9 @@ code {
 /* ---------- Results collage (masonry) ----------
    CSS multi-column masonry: every image keeps its ORIGINAL aspect ratio
    (no fixed aspect-ratio, no object-fit cropping anywhere on results).
-   Cards never split across columns (break-inside: avoid). */
+   Cards never split across columns (break-inside: avoid).
+   Column width is ~300px and the count grows with the viewport (the page
+   is fluid, see .page), so ultrawide gets more columns, not wider ones. */
 .results {
   columns: 300px;
   column-gap: 20px;
@@ -607,6 +616,11 @@ footer {
 footer p { margin: 0; max-width: 80ch; }
 
 /* ---------- Responsive ---------- */
+@media (max-width: 1400px) {
+  /* Laptop widths: a 300px column would leave only 3 wide columns, so use
+     280px and get 4 — same look, better use of the space. */
+  .results { columns: 280px; }
+}
 @media (max-width: 900px) {
   .results { columns: 240px; column-gap: 16px; }
   .card, .skeleton { margin-bottom: 16px; }

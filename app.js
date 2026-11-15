@@ -150,11 +150,17 @@ function pickBooruFile(fileUrl, sampleUrl) {
   return sampleUrl || fileUrl || null;
 }
 
-// --- Source adapters. Each returns [{ thumb, full, page, width, height, source, date }].
-// `date` is an ISO string where the API provides one (Danbooru and Wallhaven
-// via `created_at`), null otherwise. The result array also carries `.via`
-// (which proxy served it, "" for direct) and, for the boorus, `.hidden` —
-// see the note at the top about why `via` is per-call, never a global. ---
+// --- Source adapters. Each returns [{ thumb, full, alts, page, width, height, source, date, score }].
+// `alts` is the ordered list of alternate URLs for the same image to try if
+// `full` fails to load (smaller versions from the same source — see
+// imgFallback). `date` is an ISO string where the API provides one (Danbooru
+// and Wallhaven via `created_at`), null otherwise. `score` is the source's
+// popularity signal where one exists (Danbooru `score`, Wallhaven
+// `favorites`), null otherwise — Safebooru's dapi `score` is null ~88% of
+// the time and the scraped sites show no popularity number at all. The result
+// array also carries `.via` (which proxy served it, "" for direct) and, for
+// the boorus, `.hidden` — see the note at the top about why `via` is
+// per-call, never a global. ---
 const SOURCES = {
   async danbooru(q) {
     const tags = booruTags(q);
@@ -203,9 +209,18 @@ const SOURCES = {
         out.push({
           thumb: p.preview_file_url || p.large_file_url || full,
           full,
+          // If the original won't load (CDN block, rate-limit), fall back
+          // through the smaller versions of the same post.
+          alts: [p.large_file_url, p.preview_file_url].filter((u) => u && u !== full),
           page: `https://danbooru.donmai.us/posts/${p.id}`,
           width: p.image_width, height: p.image_height, source: "Danbooru",
           date: p.created_at || null,
+          // `score` is upvotes minus downvotes — Danbooru's own ranking
+          // signal (order:score uses it). Chosen over fav_count because it
+          // also counts downvotes, so a controversial post ranks lower.
+          // "code geass" sample (2026-11-15, 100 newest safe posts):
+          // median 17, p90 53, max 207.
+          score: p.score,
         });
         if (out.length >= BOORU_TARGET) break;
       }
@@ -244,11 +259,18 @@ const SOURCES = {
         const item = {
           thumb: p.preview_url,
           full,
+          // Same image, smaller: the ~850px sample, then the preview.
+          alts: [p.sample_url, p.preview_url].filter((u) => u && u !== full),
           page: `https://safebooru.org/index.php?page=post&s=view&id=${p.id}`,
           width: p.width, height: p.height, source: "Safebooru",
           // Safebooru's dapi returns no created_at (it has `change`, a
           // last-modified epoch — deliberately not used as a date).
           date: p.created_at || null,
+          // Safebooru's `score` field is NOT a usable signal: in a 100-post
+          // "code geass" sample (2026-11-15) it was null for 88 posts and 1
+          // for the other 12, so it carries no ranking information. Set to
+          // null — Safebooru items sort in the unscored tail in Best mode.
+          score: null,
         };
         if (passesMinRes(item)) {
           out.push(item);
@@ -292,11 +314,17 @@ const SOURCES = {
     const out = (data.data || []).map((w) => ({
       thumb: w.thumbs.large,
       full: w.path,
+      alts: [w.thumbs.large].filter((u) => u && u !== w.path),
       page: w.url,
       width: parseInt(w.resolution.split("x")[0], 10),
       height: parseInt(w.resolution.split("x")[1], 10),
       source: "Wallhaven",
       date: w.created_at || null,
+      // `favorites` (users who saved it) over `views` (passive traffic):
+      // favorites is an active endorsement, and Wallhaven itself offers
+      // sorting=favorites. "code geass" sample (2026-11-15, relevance
+      // page): favorites median 12, max 44; views median 5,286.
+      score: w.favorites,
     }));
     out.via = via;
     return out;
@@ -315,7 +343,7 @@ let lastReports = [];
 let lastQuery = "";
 
 function sortMode() {
-  return ($("#sort") && $("#sort").value) || "largest";
+  return ($("#sort") && $("#sort").value) || "best";
 }
 
 // Epoch ms for an item's date, or NaN when the source gives no date
@@ -324,9 +352,54 @@ function dateMs(r) {
   return r.date ? Date.parse(r.date) : NaN;
 }
 
+// --- "Best first" ---
+// The scale problem: Danbooru scores and Wallhaven favorites are different
+// scales (a Danbooru score of 200 is not the same as 200 Wallhaven
+// favorites — for "code geass" the Danbooru max was 207, Wallhaven's 44),
+// so raw numbers can't be compared across sources. Instead each scored
+// item is ranked by log10(1 + score), normalised by the best log-score
+// within its own source's fetched set — so each source's best item reads
+// as 1.0 ("best of its source") and the top of the list mixes the best of
+// every source instead of burying the smaller-voting community. The log
+// scale keeps a single runaway score from dominating.
+// A score of null, or <= 0 (nobody voted — no signal), counts as unscored:
+// unscored items sort after all scored items, in arrival order (each
+// source's own relevance order).
+function bestRank(list) {
+  const maxBySource = new Map();
+  for (const r of list) {
+    if (typeof r.score === "number" && r.score > 0) {
+      const v = Math.log10(1 + r.score);
+      if (!maxBySource.has(r.source) || v > maxBySource.get(r.source)) {
+        maxBySource.set(r.source, v);
+      }
+    }
+  }
+  // Returns 0..1 for scored items, -1 for unscored ones.
+  return (r) => {
+    if (typeof r.score !== "number" || r.score <= 0) return -1;
+    const max = maxBySource.get(r.source);
+    if (!max) return -1;
+    return Math.log10(1 + r.score) / max;
+  };
+}
+
 function sortResults(list) {
   const mode = sortMode();
   if (mode === "source") return list; // arrival order, as the sources returned them
+  if (mode === "best") {
+    const rank = bestRank(list);
+    return [...list].sort((a, b) => {
+      const ra = rank(a), rb = rank(b);
+      if (ra !== rb) return rb - ra; // unscored (-1) sorts last
+      if (ra < 0) return 0; // both unscored: keep arrival order
+      // Both scored with the same normalised rank: raw score first, then
+      // size — both are deterministic tiebreaks, and bigger is better
+      // for a wallpaper.
+      if (b.score !== a.score) return b.score - a.score;
+      return (b.width * b.height) - (a.width * a.height);
+    });
+  }
   if (mode === "newest") {
     // Dated items first, newest first; dateless items after them, in arrival order.
     return [...list].sort((a, b) => {
@@ -362,6 +435,68 @@ function shortReason(err) {
   if (http) return `HTTP ${http[1]}`;
   if (/NetworkError|Failed to fetch|Load failed/i.test(m)) return "proxy unreachable";
   return m.length > 48 ? m.slice(0, 48) + "…" : m;
+}
+
+// --- Image fallback chain ---
+// The card <img> calls imgFallback(this) inline via onerror. Inline matters:
+// it is registered at parse time, so it fires even if the image errors
+// before any JS listener could attach — the v3 post-render listener
+// (attached after innerHTML) could miss a fast failure entirely, leaving a
+// broken card with no fallback at all.
+// data-alts is the ordered list of alternate URLs for the same image
+// (smaller versions from the same source, built by the adapters). The URL
+// that just failed gets one delayed retry first (CDNs 503 in bursts), then
+// the chain steps through the alternates. When one loads, the card's links
+// are retargeted to it, so "Full image" opens the image that actually works
+// instead of the dead URL. When the list is exhausted the card is removed
+// from the grid entirely — no empty black boxes — and the result total in
+// the status line is updated.
+function imgFallback(img) {
+  // Strip our own retry cache-buster before comparing: after a retry the
+  // attribute holds "…?retry=1", and without this the guard below would
+  // treat it as a new URL and retry forever.
+  const cur = (img.getAttribute("src") || "").replace(/[?&]retry=1$/, "");
+  // One delayed retry of the exact URL that just failed: image CDNs 503 in
+  // bursts under bulk load (verified 2026-11-15: two AlphaCoders thumbs 503'd
+  // in one run and 200'd minutes later), and a retry 1.5 s later often lands
+  // on a good burst. Only once per URL — the second failure moves on to the
+  // alternates. The cache-buster forces a genuinely fresh request.
+  if (img.dataset.retried !== cur) {
+    img.dataset.retried = cur;
+    const busted = cur + (cur.includes("?") ? "&" : "?") + "retry=1";
+    setTimeout(() => { if (img.isConnected) img.src = busted; }, 1500);
+    return;
+  }
+  const alts = (img.dataset.alts || "").split("|").filter(Boolean);
+  let next = alts.shift();
+  // Never retry the URL that just failed (guards against duplicates).
+  while (next && next === img.getAttribute("src")) next = alts.shift();
+  img.dataset.alts = alts.join("|");
+  if (next) {
+    const card = img.closest(".card");
+    if (card) {
+      for (const a of card.querySelectorAll("a.thumb, a.full-link")) a.href = next;
+    }
+    img.src = next;
+    return;
+  }
+  const card = img.closest(".card");
+  if (card) card.remove();
+  updateResultTotal();
+}
+
+// Re-count visible cards after fallback removals, so the "N results" pill
+// doesn't lie. If every card failed, say so instead of leaving a blank grid.
+function updateResultTotal() {
+  const n = document.querySelectorAll("#results .card").length;
+  const pill = document.querySelector("#status .pill-total strong");
+  if (pill) pill.textContent = `${n} result${n === 1 ? "" : "s"}`;
+  if (n === 0) {
+    $("#results").innerHTML = `<div class="empty-state">
+        <h2>Every image failed to load</h2>
+        <p>The sources returned results, but none of the images would load from this browser — try the site links above, or reload the page.</p>
+      </div>`;
+  }
 }
 
 function renderResults(results, reports, q) {
@@ -420,34 +555,29 @@ function renderResults(results, reports, q) {
     const res = (r.width && r.height) ? `${r.width}×${r.height}` : "size unknown";
     // Full-resolution image as the displayed <img> (no small thumb, no crop).
     // aspect-ratio reserves the box from the known dimensions so lazy-loaded
-    // images don't shift the collage as they arrive; unknown sizes (0x0)
-    // get no ratio and size themselves naturally once loaded.
-    const ratio = (r.width && r.height) ? ` style="aspect-ratio:${r.width} / ${r.height}"` : "";
+    // images don't shift the collage as they arrive. Unknown sizes (0x0 —
+    // Wallpapers.com, AlphaCoders) get a 4:3 fallback ratio instead of
+    // nothing: without it a slow or failed image collapses the card to just
+    // its two buttons. referrerpolicy=no-referrer avoids Referer-based
+    // hotlink blocks on the image hosts.
+    const ratio = (r.width && r.height)
+      ? ` style="aspect-ratio:${r.width} / ${r.height}"`
+      : ` style="aspect-ratio:4 / 3"`;
+    const alts = (r.alts || []).filter((u) => u && u !== r.full);
     return `
     <article class="card">
-      <a class="thumb" href="${r.full}" target="_blank" rel="noopener"><img loading="lazy" decoding="async" src="${r.full}" data-thumb="${escapeHtml(r.thumb)}"${ratio} alt="${r.source} wallpaper ${res}">
+      <a class="thumb" href="${r.full}" target="_blank" rel="noopener"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${r.full}" data-alts="${escapeHtml(alts.join("|"))}" onerror="imgFallback(this)"${ratio} alt="${r.source} wallpaper ${res}">
         <span class="badge badge-res">${res}</span>
         <span class="badge badge-src">${r.source}</span>
       </a>
       <div class="meta">
         <div class="links">
           <a href="${r.page}" target="_blank" rel="noopener">Source page ↗</a>
-          <a href="${r.full}" target="_blank" rel="noopener">Full image ↗</a>
+          <a class="full-link" href="${r.full}" target="_blank" rel="noopener">Full image ↗</a>
         </div>
       </div>
     </article>`;
   }).join("");
-  // If a full image fails to load (hotlink protection, dead file), fall back
-  // to the smaller thumb instead of leaving a broken card.
-  box.querySelectorAll(".card img").forEach((img) => {
-    img.addEventListener("error", () => {
-      const thumb = img.dataset.thumb;
-      if (thumb && !img.dataset.fallbackDone) {
-        img.dataset.fallbackDone = "1";
-        img.src = thumb;
-      }
-    });
-  });
 }
 
 async function search(ev) {

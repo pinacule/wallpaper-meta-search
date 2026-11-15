@@ -56,9 +56,12 @@ const EXTRA_SOURCES = {
       out.push({
         thumb,
         full: thumb.replace("/images/thumbnail/", "/images/hd/"),
+        // Fallback: the thumbnail itself, if the /images/hd/ file won't load.
+        alts: [thumb],
         page: absUrl("https://wallpapers.com", m[1]),
         width: 0, height: 0, source: "Wallpapers.com",
         date: null, // search pages show no date — dateless in Newest sort
+        score: null, // no popularity number on the page — unscored in Best sort
       });
     }
     const items = dedupe(out);
@@ -102,10 +105,14 @@ const EXTRA_SOURCES = {
       out.push({
         thumb: absUrl("https://wallpapercave.com", m[2]),
         full: absUrl("https://wallpapercave.com", m[2]),
+        // No alternate: the grid image IS the full image, so there is
+        // nothing else to fall back to — a failed card is removed instead.
+        alts: [],
         page: absUrl("https://wallpapercave.com", m[1]),
         width: parseInt(m[3], 10), height: parseInt(m[4], 10),
         source: "WallpaperCave",
         date: null, // category pages show no date — dateless in Newest sort
+        score: null, // no popularity number on the page — unscored in Best sort
       });
     }
     const items = dedupe(out);
@@ -140,12 +147,21 @@ const EXTRA_SOURCES = {
       const base = urls.find((u) => /\.(jpg|png)$/.test(u)) || urls[0];
       if (!base) continue;
       const thumb = urls.find((u) => /thumb-350-/.test(u) && /\.(jpg|png)$/.test(u)) || base;
+      const full = base.replace(/\/thumb-(?:350|440|1920)-/, "/").replace(/\.webp$/, ".jpg");
+      // Fallbacks for the same image, full-res first: if the thumb was .webp
+      // the original was guessed as .jpg, but it may actually be .png — try
+      // that before dropping to the small thumb.
+      const alts = [];
+      if (/\.webp$/.test(base)) alts.push(full.replace(/\.jpg$/, ".png"));
+      if (thumb !== full) alts.push(thumb);
       out.push({
         thumb,
-        full: base.replace(/\/thumb-(?:350|440|1920)-/, "/").replace(/\.webp$/, ".jpg"),
+        full,
+        alts,
         page: `https://wall.alphacoders.com/big.php?i=${id}`,
         width: 0, height: 0, source: "AlphaCoders",
         date: null, // search pages show no date — dateless in Newest sort
+        score: null, // no popularity number on the page — unscored in Best sort
       });
       if (out.length >= 40) break;
     }
@@ -175,11 +191,15 @@ const EXTRA_SOURCES = {
       out.push({
         thumb: thumb[1],
         full: full[1],
+        // Fallback: the 240px thumb from s3 — a different host than the
+        // full image, so a block on one doesn't necessarily kill the other.
+        alts: [thumb[1]],
         page: `https://www.zerochan.net/${id}`,
         width: res ? parseInt(res[1], 10) : 0,
         height: res ? parseInt(res[2], 10) : 0,
         source: "Zerochan",
         date: null, // search pages show no date — dateless in Newest sort
+        score: null, // no popularity number on the page — unscored in Best sort
       });
     }
     const items = dedupe(out);
