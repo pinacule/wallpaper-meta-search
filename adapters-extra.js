@@ -90,6 +90,11 @@ const EXTRA_SOURCES = {
         full: thumb300.replace("/images/thumbnail/", "/images/hd/"),
         // Fallback: the thumbnail itself, if the /images/hd/ file won't load.
         alts: [thumb],
+        // The /images/hd/ files are multi-MB and their CDN stalls past the
+        // probe timeout on some connections; a card only needs the 900 px
+        // thumbnail (the full file is still one click away). See thumbOnly in
+        // app.js loadFullImage.
+        thumbOnly: true,
         page: absUrl("https://wallpapers.com", m[1]),
         width: 0, height: 0,
         ratioW: dims ? parseInt(dims[1], 10) : 0,

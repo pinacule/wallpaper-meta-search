@@ -18,17 +18,23 @@ const $$ = (s) => [...document.querySelectorAll(s)];
 let localProxyUp = false;
 const pageIsHttp = typeof window !== "undefined" && window.location.protocol === "http:";
 
-// Route an image URL through the local proxy when it is up (http pages
-// only — an https page can't fetch http://localhost). The proxy sends no
-// Referer and a plain UA, which dodges Referer-based hotlink blocks, and
-// it fetches over the machine's own network — the same path the search
-// fetches take. Verified 2026-11-15: Zerochan full images that STALLED
-// mid-download direct (30 s timeout, 200 status) came through the proxy
-// in ~2.4 s. When the proxy is down, images load direct as before.
+// Image hosts that genuinely need the local proxy. Everything else loads
+// direct — spreading requests over the real CDN hosts (six connections
+// each) instead of funnelling every image through localhost:8787, where the
+// browser's six-connection cap made a couple of slow files starve every
+// thumbnail behind them (black cards with only alt text, 2026-11-15).
+// Zerochan stays proxied: its full images were observed stalling
+// mid-download direct (HTTP 200, then nothing) while the proxy delivered
+// them reliably. The proxy sends no Referer, so it also sidesteps
+// Referer-based hotlink blocks for those two hosts.
 // NOTE: the proxy does NOT change the egress IP, so it can't dodge an
 // IP-based block (e.g. a CDN 403ing a datacenter/VPN IP).
+const IMAGE_PROXY_HOSTS = new Set(["static.zerochan.net", "s3.zerochan.net"]);
 function proxiedImageUrl(u) {
   if (!localProxyUp || !pageIsHttp || !u) return u;
+  let host;
+  try { host = new URL(u).hostname; } catch { return u; }
+  if (!IMAGE_PROXY_HOSTS.has(host)) return u;
   return "http://localhost:8787/?url=" + encodeURIComponent(u);
 }
 
@@ -529,15 +535,41 @@ function shortReason(err, sourceName) {
 // contain. A failed card is NEVER removed (removal is itself a jump) —
 // it becomes a fixed-height placeholder of the same reserved size, with
 // its Source page / Full image links still working.
-const imageLoadConfig = { timeoutMs: 15000, retryDelayMs: 1500 };
+const imageLoadConfig = { timeoutMs: 15000, retryDelayMs: 1500, maxParallelProbes: 3 };
+
+// Global cap on full-res probes. Each probe can be a multi-MB download, and
+// the browser gives one origin only six connections: without this cap a few
+// slow or stalled files (Wallpapers.com's CDN, a stalling Zerochan PNG) end
+// up holding every connection, and thumbnails queued behind them paint
+// black with only their alt text. Thumbs never go through this queue — only
+// the full-res upgrade does.
+const probeSlots = { active: 0, queue: [] };
+function acquireProbeSlot(start) {
+  if (probeSlots.active < imageLoadConfig.maxParallelProbes) {
+    probeSlots.active++;
+    start();
+  } else {
+    probeSlots.queue.push(start);
+  }
+}
+function releaseProbeSlot() {
+  probeSlots.active = Math.max(0, probeSlots.active - 1);
+  const next = probeSlots.queue.shift();
+  if (next) {
+    probeSlots.active++;
+    next();
+  }
+}
 
 // Probe one URL: loads it into the browser cache (no cache-buster, so the
 // later <img> swap reuses it). Calls done(true) on load, done(false) on
 // error OR on timeout (a stalled download counts as failed). One retry
-// after retryDelayMs, then gives up on this URL. Returns a cancel function:
-// calling it silently stops the probe (no done() call) — used when the card
-// is discarded mid-probe so a stalled multi-MB download doesn't run to its
-// 15 s timeout for an image that will never be shown.
+// after retryDelayMs — but only for a quick error, not for a timeout: a
+// file that already stalled for the full budget once would just occupy a
+// probe slot (and one of the browser's six connections) for another 15 s.
+// Holds one of maxParallelProbes global slots while it runs. Returns a
+// cancel function: calling it silently stops the probe (no done() call) —
+// used when the card is discarded mid-probe, and it releases the slot.
 // NOTE: `finished` is per attempt, not per probe — the retry is a second
 // attempt and must be able to finish on its own. (Hoisting it to the probe
 // scope once broke the whole fallback chain: the first attempt's finish
@@ -549,14 +581,24 @@ function probeUrl(url, done) {
   let timer = null;
   let retryTimer = null;
   let probe = null;
-  const finish = (ok) => {
+  let hasSlot = false;
+  const releaseSlot = () => {
+    if (!hasSlot) return;
+    hasSlot = false;
+    releaseProbeSlot();
+  };
+  const finish = (ok, timedOut) => {
     if (cancelled) return;
     clearTimeout(timer);
     clearTimeout(retryTimer);
     if (probe) probe.src = ""; // abort a stalled download
-    if (ok) done(true);
-    else if (attempts < 2) retryTimer = setTimeout(attempt, imageLoadConfig.retryDelayMs);
-    else done(false);
+    if (ok) { releaseSlot(); done(true); return; }
+    if (!timedOut && attempts < 2) {
+      retryTimer = setTimeout(attempt, imageLoadConfig.retryDelayMs);
+      return;
+    }
+    releaseSlot();
+    done(false);
   };
   const attempt = () => {
     if (cancelled) return;
@@ -564,19 +606,24 @@ function probeUrl(url, done) {
     probe = new Image();
     probe.referrerPolicy = "no-referrer";
     let finished = false;
-    const finishOnce = (ok) => { if (finished) return; finished = true; finish(ok); };
-    timer = setTimeout(() => finishOnce(false), imageLoadConfig.timeoutMs);
-    probe.onload = () => finishOnce(true);
-    probe.onerror = () => finishOnce(false);
+    const finishOnce = (ok, timedOut) => { if (finished) return; finished = true; finish(ok, timedOut); };
+    timer = setTimeout(() => finishOnce(false, true), imageLoadConfig.timeoutMs);
+    probe.onload = () => finishOnce(true, false);
+    probe.onerror = () => finishOnce(false, false);
     probe.src = url;
   };
-  attempt();
+  acquireProbeSlot(() => {
+    if (cancelled) { releaseProbeSlot(); return; }
+    hasSlot = true;
+    attempt();
+  });
   return () => {
     if (cancelled) return;
     cancelled = true;
     clearTimeout(timer);
     clearTimeout(retryTimer);
     if (probe) probe.src = "";
+    releaseSlot();
   };
 }
 
@@ -630,6 +677,11 @@ const probedFullUrls = new Set();
 function loadFullImage(img) {
   if (!img.isConnected || img.dataset.upgradeStarted) return;
   img.dataset.upgradeStarted = "1";
+  // Some sources (Wallpapers.com) serve the card-sized thumbnail fine but
+  // their full-size files are multi-MB on a CDN that stalls past the probe
+  // timeout here. Keep the thumbnail: probing would only burn a slot, then
+  // hide a perfectly good image behind the failure placeholder.
+  if (img.dataset.thumbOnly) { img.dataset.state = "thumb"; return; }
   // Candidates in order: full, then alternates (smaller versions of the
   // same image). Deduped — e.g. WallpaperCave's thumb IS its full image.
   const candidates = [img.dataset.full, ...(img.dataset.alts ? img.dataset.alts.split("|").filter(Boolean) : [])]
@@ -683,6 +735,9 @@ function loadFullImage(img) {
 // host doesn't. If an upgrade is already running, the probe resolves it.
 function imgThumbError(img) {
   if (img.dataset.state === "failed") return;
+  // Thumb-only card (Wallpapers.com): there is no cheap fallback to try, so
+  // a failed thumbnail is already a total failure.
+  if (img.dataset.thumbOnly) { markImageFailed(img); return; }
   // The visible image IS the full-res one (its probe already succeeded, or
   // the thumb is the full image — WallpaperCave) and it just errored:
   // there is nothing left to try. Show the placeholder instead of leaving
@@ -764,6 +819,7 @@ function favSnapshot(r) {
     source: r.source,
     date: r.date || null,
     score: typeof r.score === "number" ? r.score : null,
+    thumbOnly: !!r.thumbOnly,
   };
 }
 
@@ -968,7 +1024,7 @@ function renderResults(results, reports, q) {
     const fav = isFav(r.page);
     return `
     <article class="card">
-      <a class="thumb" href="${fullUrl}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${thumbSrc}" data-full="${escapeHtml(fullUrl)}" data-alts="${escapeHtml(alts.join("|"))}" data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
+      <a class="thumb" href="${fullUrl}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${thumbSrc}" data-full="${escapeHtml(fullUrl)}" data-alts="${escapeHtml(alts.join("|"))}"${r.thumbOnly ? ' data-thumb-only="1"' : ""} data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
         <span class="badge badge-res">${res}</span>
         <span class="badge badge-src">${r.source}</span>
       </a>
