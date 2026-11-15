@@ -99,6 +99,15 @@ per-proxy errors.
   Sites that don't show a resolution are never hidden by the filter. When
   the filter hides matches, the status line says how many (Danbooru's count
   is exact for the whole database; Safebooru's is "of N checked").
+- **Show** — how many wallpapers load per search: **50**, **100** (default),
+  **150**, **200**, or **All**. The limit applies after merging, sorting and
+  the other filters, so it counts the wallpapers that would actually show —
+  fewer cards means fewer thumbnails and fewer full-res probes. When it hides
+  results the status line says how many ("N more — raise the limit to see
+  them"). Favorites always show all saved items, whatever the limit says.
+  The choice is remembered in the browser (localStorage `wms.limit`). The
+  per-source fetch caps (40 per source) are unchanged — the limit caps what
+  is rendered, not what is fetched.
 - **Device / ratio** — All ratios (default), **PC — landscape**, **PC —
   ultrawide 21:9**, or **Phone — portrait**. Classified from each item's own
   width/height: landscape is width > height, ultrawide is width/height ≥
@@ -132,7 +141,24 @@ per-proxy errors.
   - Verified counts for "code geass": Danbooru safe 8,176 vs mixed 10,656
     vs explicit 1,788 posts; Wallhaven purity 100: 375 vs 110: 454 results
     (001 anonymous: 0).
-- **Booru queries** — comma separates tags: `code geass, lelouch`.
+- **Color** — a row of swatches (Red, Orange, Yellow, Green, Teal, Blue,
+  Purple, Pink, Brown, Black, White) plus **Any color** (default). Only
+  Wallhaven supports it: the chosen swatch is sent as Wallhaven's `colors`
+  hex parameter (the swatch values are Wallhaven's own indexed palette), and
+  the Wallhaven status pill notes the color (e.g. "· color #cc0000").
+  Danbooru and Safebooru take tags only, and the scraped listings carry no
+  color data, so every other source ignores the choice and returns its
+  normal results — the picker says so ("Color filters Wallhaven only").
+  The choice is remembered in the browser (localStorage `wms.color`) and
+  applies on the next search, like the Content mode. No client-side pixel
+  analysis, no guessing a color from tags.
+- **Booru queries** — the query is auto-formatted per source. Boorus
+  (Danbooru, Safebooru) are tag search: plain words join into one tag with
+  underscores (`code geass` → `code_geass`), comma-separated groups become
+  separate tags, and explicit booru syntax is left alone (`-excluded` tags,
+  `~` OR groups, `*` wildcards, metatags like `rating:explicit` and
+  `order:score`, tokens that already contain `_`). Every other source takes
+  the plain text unchanged.
 
 ## Sorting
 
@@ -155,7 +181,13 @@ results instantly — no re-search:
   of the list mixes the best of every source instead of burying the
   smaller-voting community. Ties break by raw score, then by size.
   Items with no signal (Safebooru, the scraped sites, and anything with
-  a score of 0) sort after all scored items, in arrival order.
+  a score of 0) used to sort after all scored items — so the top of a
+  search was only Danbooru + Wallhaven and the best unscored results sat
+  buried at the bottom. Best now interleaves the sources round-robin: the
+  best item of every source first, then the second-best of every source,
+  and so on, with each source's internal order still best-first. Source
+  order within each round is first-appearance order in the best-sorted
+  list, so the highest-ranked source leads each round.
 - **Largest first** — pixel area, largest first.
 - **Newest first** — Danbooru and Wallhaven items carry their upload date;
   newest dated items first, then items with no date (Safebooru's API returns
@@ -190,11 +222,42 @@ clean; on touch devices, which have no hover, the row is always visible.
 — so on a wide monitor the masonry just adds more ~300px columns instead
 of leaving empty margins.
 
-Images go through the local proxy when it is running (same path as the
-search fetches): the proxy sends no Referer and a plain UA, which dodges
-Referer-based hotlink blocks. Verified 2026-11-15: Zerochan full images
-that stalled mid-download direct came through the proxy in ~2.4 s. The
-proxy does NOT change the egress IP, so it can't dodge an IP-based block.
+Only Zerochan images go through the local proxy when it is running —
+every other source's images load direct, so a search never queues ~200
+images behind the proxy's 6-connection limit (changed 2026-11-15: the
+proxy used to carry every image). The proxy sends no Referer and a plain
+UA, which dodges Referer-based hotlink blocks. Verified 2026-11-15:
+Zerochan full images that stalled mid-download direct came through the
+proxy in ~2.4 s. The proxy does NOT change the egress IP, so it can't
+dodge an IP-based block. With the proxy off, Zerochan full images stall
+direct again (the thumbnail still shows).
+
+## Preload
+
+The **Preload** select in the toolbar (Off / 0.5 / 1 / 2 / 5 GB, default
+**1 GB**, remembered in the browser) says how much full-image data to
+fetch up front while you wait after a search: once results render, the
+app eagerly upgrades full-res images in display order until that much has
+loaded, showing progress next to the select ("Preloading ≈ 0.4 / 1 GB…").
+This is a preload amount, not a cap — when the target is reached eager
+preloading stops, but scrolling still upgrades cards on demand as usual,
+so nothing is ever blocked by the number. Off is the old lazy-only
+behaviour. The count resets on every new search; raising the target
+mid-search resumes preloading with the next queued card.
+
+How the bytes are counted — honestly approximate, so the meter always
+reads "≈": Danbooru and Wallhaven report an exact `file_size` per item
+(verified live 2026-11-15); Safebooru and all scraped sites don't, so
+those are estimated at 0.5 bytes per pixel from the known dimensions
+(observed range across real files: ~0.1 for a flat Danbooru jpg to ~1.4
+for a big AlphaCoders PNG), or a flat 5 MB when even the dimensions are
+unknown. A successful upgrade is charged once, at the full file's cost,
+even if a smaller alternate is what actually loaded; failed or stalled
+probes charge nothing (their partial bytes are uncounted). Preloading
+runs one probe at a time so two of the three probe slots stay free for
+scrolling, skips thumb-only (Wallpapers.com) cards, and does not run in
+the Favorites view — a handful of deliberate picks, which the observer
+upgrades on demand anyway.
 
 ## Favorites
 
@@ -210,6 +273,22 @@ order all work on favorites too). Click it again — or run a new search —
 to go back to normal results. Favorites survive reloads and new searches,
 and a wallpaper that shows up again in a later search still shows its
 filled heart. Everything is local-only: no account, no server, no export.
+
+## Changes since v5.2 (merged from the local agent's work, 2026-11-15)
+
+- Images are proxied **only for Zerochan hosts** (`static.zerochan.net`,
+  `s3.zerochan.net`); every other source loads direct. This removes the
+  localhost 6-connection bottleneck that queued a whole search behind the
+  proxy.
+- At most **3 full-res probes run at once**. A probe that stalls for the
+  full 15 s is **not retried** — only quick errors get one retry.
+- **Wallpapers.com cards are thumb-only**: their multi-MB full files are
+  never probed in-card (the card keeps the thumbnail; the "Full image"
+  button still works). Consequence: a Wallpapers.com badge can no longer
+  fill in from a full load — it stays "size unknown" until the full image
+  is opened directly.
+- The local proxy gives up on an upstream fetch after **20 s** and aborts
+  the upstream download when the browser request closes.
 
 ## Bugs fixed in this version
 

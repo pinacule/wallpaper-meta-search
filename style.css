@@ -149,17 +149,46 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   .search-box button[type="submit"] { width: 100%; }
 }
 
-/* ---------- Toolbar: chips, resolution, SFW ---------- */
-.toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 14px 22px;
+/* ---------- Options panel: labelled control groups ----------
+   One panel, one row per group: Sources / Filters / View, each with a
+   fixed-width label column so the controls line up. A new control slots
+   into the matching #group-* container in index.html (see the comment
+   there); the panel itself needs no changes when one is added. */
+.options {
   margin: 18px 0 0;
-  padding: 14px 16px;
+  padding: 4px 18px 6px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+.control-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 14px 0;
+}
+.control-group + .control-group { border-top: 1px solid var(--border); }
+.control-group > .group-label {
+  flex: 0 0 92px;
+  margin-right: 0;
+  padding-top: 9px; /* line the label up with the first row of controls */
+}
+.group-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 20px;
+  min-width: 0;
+  flex: 1;
+}
+/* Source chips keep their tighter 8px gap (the .chip-group rule below
+   sets it); this override only guards the source order if .group-controls
+   ever moves after it in this file. */
+.group-controls.chip-group { gap: 8px; }
+@media (max-width: 640px) {
+  /* Narrow screens: label above its controls instead of beside them. */
+  .control-group { flex-direction: column; gap: 8px; padding: 12px 0; }
+  .control-group > .group-label { flex: none; padding-top: 0; }
 }
 .chip-group {
   display: flex;
@@ -226,13 +255,6 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   border-radius: 999px;
   background: rgba(255, 193, 77, .16);
   color: #ffcf7d;
-}
-.toolbar-right {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 16px 22px;
-  margin-left: auto;
 }
 .field {
   display: inline-flex;
@@ -607,7 +629,7 @@ code {
   border-color: rgba(255, 93, 115, .55);
   background: rgba(255, 93, 115, .12);
 }
-/* Favorites toggle in the toolbar. */
+/* Favorites toggle in the View group. */
 .favs-toggle {
   padding: 8px 14px;
   border: 1px solid var(--border-strong);
@@ -730,7 +752,6 @@ footer p { margin: 0; max-width: 80ch; }
 @media (max-width: 900px) {
   .results { columns: 240px; column-gap: 16px; }
   .card, .skeleton { margin-bottom: 16px; }
-  .toolbar-right { margin-left: 0; }
 }
 @media (max-width: 600px) {
   .results { columns: 2; column-gap: 12px; }
@@ -782,3 +803,53 @@ footer p { margin: 0; max-width: 80ch; }
   font-size: .88em;
 }
 .proxy-banner .btn-ghost { flex: 0 0 auto; white-space: nowrap; }
+
+.pill-limit { background: var(--panel-2); color: var(--muted); border-color: var(--border-strong); }
+/* Color swatches: their own row in the toolbar (flex-wrap puts it below
+   the sources/selects). A swatch is a filled circle in its color; the
+   selected one gets a white ring + accent halo. "Any" is a small pill. */
+.color-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  flex: 1 1 100%;
+}
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.swatch {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 50%;
+  border: none;
+  background: var(--sw, #888);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22);
+  cursor: pointer;
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+.swatch:hover { transform: scale(1.15); }
+.swatch[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22), 0 0 0 2px var(--panel), 0 0 0 4px var(--accent);
+}
+.swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.swatch-any {
+  width: auto;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-soft);
+  box-shadow: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: .85rem;
+  font-weight: 650;
+}
+.swatch-any:hover { border-color: var(--accent); color: var(--text); transform: none; }
+.swatch-any[aria-pressed="true"] {
+  color: #fff;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: none;
+}
+.color-note { color: var(--muted); font-size: .85rem; margin: 0; }

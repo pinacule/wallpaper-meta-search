@@ -74,6 +74,7 @@ const EXTRA_SOURCES = {
   // The listing also offers a 900w /images/high/ variant: that is the thumb
   // now, instead of the 300w thumbnail — visibly crisper in the grid.
   async wallpapersdotcom(q) {
+    q = formatQueryFor("wallpapersdotcom", q);
     const { text: html, via } = await fetchHtml(`https://wallpapers.com/search/${encodeURIComponent(q)}`);
     const out = [];
     const re = /<a[^>]+href="(\/wallpapers\/[^"]+\.html)"[^>]*>([\s\S]*?)<\/a>/g;
@@ -122,6 +123,7 @@ const EXTRA_SOURCES = {
   // category URL directly from the query: /<query-slug>-wallpapers. If the
   // guess 404s, the adapter fails honestly like before.
   async wallpapercave(q) {
+    q = formatQueryFor("wallpapercave", q);
     const slug = q.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
     // Fast path: guess the category URL from the query ("/code-geass-wallpapers").
     // Most one-topic queries land here and skip the search-page fetch entirely
@@ -179,6 +181,7 @@ const EXTRA_SOURCES = {
   // right after its big.php link — so width/height are real here, and the
   // full URL uses the true file extension instead of guessing .jpg/.png.
   async alphacoders(q) {
+    q = formatQueryFor("alphacoders", q);
     const { text: html, via } = await fetchHtml(`https://wall.alphacoders.com/search.php?search=${encodeURIComponent(q)}`);
     const dims = new Map(); // id -> { w, h, fmt }
     for (const dm of html.matchAll(/big\.php\?i=(\d+)"[\s\S]{0,900}?<meta itemprop="width" content="(\d+)">\s*<meta itemprop="height" content="(\d+)">(?:\s*<meta itemprop="fileFormat" content="(\w+)">)?/g)) {
@@ -236,6 +239,7 @@ const EXTRA_SOURCES = {
   // "Checking browser..." challenge to some direct requests; going through
   // the proxy returns the real page (verified 2026-11-15).
   async zerochan(q) {
+    q = formatQueryFor("zerochan", q);
     const { text: html, via } = await fetchHtml(`https://www.zerochan.net/search?q=${encodeURIComponent(q)}`);
     const out = [];
     const liRe = /<li[^>]+data-id="(\d+)"[^>]*>([\s\S]*?)<\/li>/g;

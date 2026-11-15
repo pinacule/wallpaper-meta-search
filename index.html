@@ -41,9 +41,20 @@
       <button type="button" id="proxy-recheck" class="btn-ghost">Check again</button>
     </div>
 
-    <section class="toolbar" aria-label="Search options">
-      <div class="chip-group" role="group" aria-label="Sources with inline results">
-        <span class="group-label">Sources</span>
+    <section class="options" aria-label="Search options">
+      <!-- Control groups: each group is a labelled row with a stable id.
+           To add a control, drop it into the matching .group-controls div:
+             group-sources — source checkboxes (class "source")
+             group-filters — selects that narrow what is shown, plus the
+                             color swatches (Wallhaven only)
+             group-view    — sort order + how many to show + preload amount
+                             + the Favorites toggle
+             group-data    — the collapsed Settings panel below (proxy /
+                              Worker / API key fields)
+           Do not rename the ids inside: app.js finds controls by id. -->
+      <div class="control-group" id="group-sources">
+        <span class="group-label" id="group-sources-label">Sources</span>
+        <div class="group-controls chip-group" role="group" aria-labelledby="group-sources-label" aria-label="Sources with inline results">
         <label class="chip"><input type="checkbox" class="source" value="danbooru" checked><span class="chip-dot" aria-hidden="true"></span>Danbooru</label>
         <label class="chip"><input type="checkbox" class="source" value="safebooru" checked><span class="chip-dot" aria-hidden="true"></span>Safebooru</label>
         <label class="chip"><input type="checkbox" class="source" value="wallhaven" checked><span class="chip-dot" aria-hidden="true"></span>Wallhaven</label>
@@ -52,9 +63,12 @@
         <label class="chip"><input type="checkbox" class="source" value="wallpapercave" checked><span class="chip-dot" aria-hidden="true"></span>WallpaperCave</label>
         <label class="chip"><input type="checkbox" class="source" value="zerochan" checked><span class="chip-dot" aria-hidden="true"></span>Zerochan</label>
       </div>
+      </div>
 
-      <div class="toolbar-right">
-        <label class="field">Device / ratio
+      <div class="control-group" id="group-filters">
+        <span class="group-label" id="group-filters-label">Filters</span>
+        <div class="group-controls" role="group" aria-labelledby="group-filters-label">
+          <label class="field">Device / ratio
           <select id="device-ratio">
             <option value="all" selected>All ratios</option>
             <option value="pc">PC — landscape</option>
@@ -62,7 +76,7 @@
             <option value="phone">Phone — portrait</option>
           </select>
         </label>
-        <label class="field">Min. resolution
+          <label class="field">Min. resolution
           <select id="min-res">
             <option value="0">Any</option>
             <option value="1920x1080" selected>1920&times;1080+</option>
@@ -70,7 +84,38 @@
             <option value="3440x1440">3440&times;1440+</option>
           </select>
         </label>
-        <label class="field">Order
+          <label class="field">Content
+          <select id="purity">
+            <option value="safe" selected>Safe only</option>
+            <option value="mixed">Mixed — safe + suggestive</option>
+            <option value="nsfw">NSFW only</option>
+          </select>
+        </label>
+      <div class="color-row" role="group" aria-label="Wallpaper color">
+        <span class="group-label">Color</span>
+        <div class="swatches" id="color-swatches">
+          <button type="button" class="swatch swatch-any" data-color="" aria-pressed="true" title="Any color">Any</button>
+          <button type="button" class="swatch" data-color="cc0000" style="--sw:#cc0000" aria-pressed="false" aria-label="Red" title="Red"></button>
+          <button type="button" class="swatch" data-color="cc6633" style="--sw:#cc6633" aria-pressed="false" aria-label="Orange" title="Orange"></button>
+          <button type="button" class="swatch" data-color="ffff00" style="--sw:#ffff00" aria-pressed="false" aria-label="Yellow" title="Yellow"></button>
+          <button type="button" class="swatch" data-color="77cc33" style="--sw:#77cc33" aria-pressed="false" aria-label="Green" title="Green"></button>
+          <button type="button" class="swatch" data-color="66cccc" style="--sw:#66cccc" aria-pressed="false" aria-label="Teal" title="Teal"></button>
+          <button type="button" class="swatch" data-color="0066cc" style="--sw:#0066cc" aria-pressed="false" aria-label="Blue" title="Blue"></button>
+          <button type="button" class="swatch" data-color="663399" style="--sw:#663399" aria-pressed="false" aria-label="Purple" title="Purple"></button>
+          <button type="button" class="swatch" data-color="ea4c88" style="--sw:#ea4c88" aria-pressed="false" aria-label="Pink" title="Pink"></button>
+          <button type="button" class="swatch" data-color="660000" style="--sw:#660000" aria-pressed="false" aria-label="Brown" title="Brown"></button>
+          <button type="button" class="swatch" data-color="000000" style="--sw:#000000" aria-pressed="false" aria-label="Black" title="Black"></button>
+          <button type="button" class="swatch" data-color="ffffff" style="--sw:#ffffff" aria-pressed="false" aria-label="White" title="White"></button>
+        </div>
+        <p class="color-note">Color filters Wallhaven only — other sources don't support it.</p>
+      </div>
+        </div>
+      </div>
+
+      <div class="control-group" id="group-view">
+        <span class="group-label" id="group-view-label">View</span>
+        <div class="group-controls" role="group" aria-labelledby="group-view-label">
+          <label class="field">Order
           <select id="sort">
             <option value="best" selected>Best first</option>
             <option value="largest">Largest first</option>
@@ -78,18 +123,31 @@
             <option value="source">Source order (most relevant)</option>
           </select>
         </label>
-        <label class="field">Content
-          <select id="purity">
-            <option value="safe" selected>Safe only</option>
-            <option value="mixed">Mixed — safe + suggestive</option>
-            <option value="nsfw">NSFW only</option>
+          <label class="field">Show
+          <select id="limit">
+            <option value="50">50 wallpapers</option>
+            <option value="100" selected>100 wallpapers</option>
+            <option value="150">150 wallpapers</option>
+            <option value="200">200 wallpapers</option>
+            <option value="0">All wallpapers</option>
           </select>
         </label>
-        <button type="button" id="favs-toggle" class="favs-toggle" aria-pressed="false">★ Favorites (0)</button>
+          <label class="field">Preload
+          <select id="data-preload">
+            <option value="0">Off</option>
+            <option value="536870912">0.5 GB</option>
+            <option value="1073741824" selected>1 GB</option>
+            <option value="2147483648">2 GB</option>
+            <option value="5368709120">5 GB</option>
+          </select>
+        </label>
+          <span id="preload-meter" class="hint"></span>
+          <button type="button" id="favs-toggle" class="favs-toggle" aria-pressed="false">★ Favorites (0)</button>
+        </div>
       </div>
     </section>
 
-    <details class="settings">
+    <details class="settings" id="group-data">
       <summary><span class="summary-label">Settings &amp; why some sources need a proxy</span><span class="chev" aria-hidden="true"></span></summary>
       <div class="settings-body">
         <p>Wallhaven, Safebooru and the other non-Danbooru sources don&rsquo;t send the header that lets a web page query them directly, so those requests go through a proxy chain: your <strong>local proxy</strong> first (run <code>start.sh</code> / <code>start.bat</code>), then your own <strong>Cloudflare Worker</strong> if you set one up (see <code>worker/README.md</code>), then a custom proxy if you enter one, then public fallbacks (corsfix, allorigins, cors.lol — flaky, tried last). Danbooru allows direct requests and never touches a proxy. The status line under each search tells you which path actually worked.</p>

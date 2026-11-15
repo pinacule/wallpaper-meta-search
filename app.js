@@ -32,9 +32,14 @@ const pageIsHttp = typeof window !== "undefined" && window.location.protocol ===
 const IMAGE_PROXY_HOSTS = new Set(["static.zerochan.net", "s3.zerochan.net"]);
 function proxiedImageUrl(u) {
   if (!localProxyUp || !pageIsHttp || !u) return u;
-  let host;
-  try { host = new URL(u).hostname; } catch { return u; }
-  if (!IMAGE_PROXY_HOSTS.has(host)) return u;
+  // Host check without `new URL()`: this runs 3x per card (thumb, full,
+  // each alt), and URL parsing costs ~8µs a call — ~4ms per 159-card
+  // render with the proxy up. Splitting on "/" gives the host at index 2
+  // for absolute URLs; anything else (relative or malformed) has no host
+  // there and loads direct, as before. Lowercased so an uppercase host
+  // still matches, like URL.hostname would.
+  const host = u.split("/")[2];
+  if (!host || !IMAGE_PROXY_HOSTS.has(host.toLowerCase())) return u;
   return "http://localhost:8787/?url=" + encodeURIComponent(u);
 }
 
@@ -48,7 +53,7 @@ function proxiedImageUrl(u) {
 // Sites without inline results: open their own search in a new tab.
 const SITE_LINKS = [
   ["WallpaperAccess", (q) => `https://wallpaperaccess.com/search?q=${encodeURIComponent(q)}`],
-  ["Gelbooru", (q) => `https://gelbooru.com/index.php?page=post&s=list&tags=${encodeURIComponent(q.replace(/\s+/g, "_"))}`],
+  ["Gelbooru", (q) => `https://gelbooru.com/index.php?page=post&s=list&tags=${encodeURIComponent(formatQueryFor("gelbooru", q))}`],
   ["Wallhaven", (q) => `https://wallhaven.cc/search?q=${encodeURIComponent(q)}`],
   ["Google Images", (q) => `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(q + " wallpaper")}`],
 ];
@@ -73,8 +78,20 @@ function loadSettings() {
   $("#purity").value = ["safe", "mixed", "nsfw"].includes(p) ? p : "safe";
   const dr = localStorage.getItem("wms.deviceRatio");
   $("#device-ratio").value = ["all", "pc", "ultrawide", "phone"].includes(dr) ? dr : "all";
+  const limEl = $("#limit");
+  if (limEl) {
+    const lim = localStorage.getItem("wms.limit");
+    limEl.value = ["50", "100", "150", "200", "0"].includes(lim) ? lim : "100";
+  }
+  const preloadEl = $("#data-preload");
+  if (preloadEl) {
+    const pv = localStorage.getItem("wms.preload");
+    preloadEl.value = PRELOAD_VALUES.includes(pv) ? pv : String(PRELOAD_DEFAULT);
+  }
+  updatePreloadMeter();
   const whKeyEl = $("#wh-key");
   if (whKeyEl) whKeyEl.value = localStorage.getItem("wms.whKey") || "";
+  setWallColor(wallColor());
   updateProxyStatus();
 }
 function saveSettings() {
@@ -82,6 +99,10 @@ function saveSettings() {
   localStorage.setItem("wms.workerUrl", $("#worker-url").value.trim());
   localStorage.setItem("wms.purity", $("#purity").value);
   localStorage.setItem("wms.deviceRatio", $("#device-ratio").value);
+  const limEl = $("#limit");
+  if (limEl) localStorage.setItem("wms.limit", limEl.value);
+  const preloadEl = $("#data-preload");
+  if (preloadEl) localStorage.setItem("wms.preload", preloadEl.value);
   const whKeyEl = $("#wh-key");
   if (whKeyEl) localStorage.setItem("wms.whKey", whKeyEl.value.trim());
 }
@@ -93,6 +114,27 @@ function saveSettings() {
 function purity() {
   const v = $("#purity").value;
   return ["safe", "mixed", "nsfw"].includes(v) ? v : "safe";
+}
+// Wallpaper color — Wallhaven ONLY. Wallhaven's API takes a `colors` hex
+// (no "#", e.g. cc0000); the values below are Wallhaven's own indexed
+// palette, so every swatch is a color the API actually matches on. No other
+// source has a color parameter — Danbooru/Safebooru take tags only, and the
+// scraped listings (AlphaCoders, Wallpapers.com, WallpaperCave, Zerochan)
+// carry no color data — so a color choice filters Wallhaven and leaves
+// every other source untouched. The UI says so next to the picker. There is
+// no client-side pixel analysis and no guessing a color from tags.
+// Persisted in localStorage as `wms.color` ("" = any color).
+const WALL_COLORS = ["cc0000", "cc6633", "ffff00", "77cc33", "66cccc", "0066cc", "663399", "ea4c88", "660000", "000000", "ffffff"];
+function wallColor() {
+  const c = localStorage.getItem("wms.color") || "";
+  return WALL_COLORS.includes(c) ? c : "";
+}
+function setWallColor(hex) {
+  const next = WALL_COLORS.includes(hex) ? hex : "";
+  localStorage.setItem("wms.color", next);
+  $$(".swatch").forEach((b) => {
+    b.setAttribute("aria-pressed", (b.dataset.color || "") === next ? "true" : "false");
+  });
 }
 
 // Shows whether the local proxy (start.sh / start.bat) is running — in the
@@ -132,6 +174,17 @@ function minRes() {
   if (!v || v === "0") return null;
   const [w, h] = v.split("x").map(Number);
   return { w, h };
+}
+// How many search results to render: 50 / 100 / 150 / 200, or 0 = All.
+// "0" follows the min-res "0" = Any pattern (a truthy string — never
+// compare it numerically without this check). An unknown value falls back
+// to the default 100 rather than hiding everything or nothing.
+function resultLimit() {
+  const el = $("#limit");
+  const v = el ? el.value : "";
+  if (!v || v === "0") return 0;
+  const n = parseInt(v, 10);
+  return [50, 100, 150, 200].includes(n) ? n : 100;
 }
 function passesMinRes(r, m = minRes()) {
   // Unknown sizes (0x0 — some scraped sites don't show resolution) pass
@@ -193,15 +246,52 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// "Code Geass" -> "code_geass"; "Code Geass, Lelouch" -> "code_geass lelouch"
-// (comma separates tags, whitespace inside a tag becomes underscores).
-// Tags are joined with SPACES, not "+", because encodeURIComponent turns "+"
-// into "%2B" and Danbooru then treats the whole thing as one literal tag
-// (that was the "Danbooru: 0 found" bug at default settings).
-function booruTags(q) {
-  return q.split(",").map((part) =>
-    part.trim().toLowerCase().split(/\s+/).filter(Boolean).join("_")
-  ).filter(Boolean).join(" ");
+// Format a user's free-text query into valid booru tags (Danbooru,
+// Safebooru, Gelbooru). Plain words join into one tag with underscores
+// ("code geass" -> "code_geass"); comma-separated groups become separate
+// tags; anything that already looks like booru syntax stands alone
+// untouched: metatags ("rating:explicit", "order:score", "width:>=1920"),
+// "-excluded" tags, "~" OR-group tags, "*" wildcards, and tokens that
+// already contain "_" ("code_geass"). A lone "-" or "~" attaches to the
+// next token ("- nude" -> "-nude"). Hyphens inside plain words become
+// underscores ("code-geass" -> "code_geass") because booru tag names don't
+// contain hyphens. The old version blindly joined every whitespace token
+// in a comma group with "_", which glued exclusions and metatags into the
+// phrase ("code geass -nude" became the single nonexistent tag
+// "code_geass_-nude", and the exclusion was silently lost).
+function formatBooruTags(q) {
+  const out = [];
+  let phrase = [];
+  let pendingPrefix = "";
+  const flush = () => { if (phrase.length) { out.push(phrase.join("_")); phrase = []; } };
+  const isSpecial = (t) => t.startsWith("-") || t.startsWith("~") || t.includes(":") || t.includes("*") || t.includes("_");
+  for (const part of String(q).split(",")) {
+    for (let raw of part.trim().toLowerCase().split(/\s+/)) {
+      if (!raw) continue;
+      if (raw === "-" || raw === "~") { pendingPrefix = raw; continue; }
+      if (pendingPrefix) {
+        if (isSpecial(raw)) pendingPrefix = ""; // can't combine; drop it
+        else { raw = pendingPrefix + raw; pendingPrefix = ""; }
+      }
+      if (isSpecial(raw)) { flush(); out.push(raw); }
+      else phrase.push(raw.replace(/-/g, "_"));
+    }
+    flush();
+    pendingPrefix = ""; // a dangling prefix doesn't cross a comma group
+  }
+  flush();
+  return out.join(" ");
+}
+
+// Per-source query formatting. Boorus are tag search: the same words need
+// underscores ("code geass" -> "code_geass") or they mean something else
+// entirely. Every other source takes plain free text, so the query passes
+// through unchanged. All adapters (and the Gelbooru link-out) go through
+// here — no ad-hoc query rewriting anywhere else.
+const BOORU_SOURCES = new Set(["danbooru", "safebooru", "gelbooru"]);
+function formatQueryFor(source, q) {
+  if (BOORU_SOURCES.has(String(source).toLowerCase())) return formatBooruTags(q);
+  return q;
 }
 
 // Prefer the original file for `full` (a wallpaper app wants full res, not
@@ -224,7 +314,7 @@ function pickBooruFile(fileUrl, sampleUrl) {
 // per-call, never a global. ---
 const SOURCES = {
   async danbooru(q) {
-    const tags = booruTags(q);
+    const tags = formatQueryFor("danbooru", q);
     const m = minRes();
     const p = purity();
     // Safe: rating:safe only. Mixed: safe OR questionable (comma = OR inside
@@ -282,6 +372,7 @@ const SOURCES = {
           // "code geass" sample (2026-11-15, 100 newest safe posts):
           // median 17, p90 53, max 207.
           score: p.score,
+          fileSize: typeof p.file_size === "number" ? p.file_size : null,
         });
         if (out.length >= BOORU_TARGET) break;
       }
@@ -305,7 +396,7 @@ const SOURCES = {
     // instead of giving up after the first 40 newest posts.
     // (minRes is read once here, not per item — the select can't usefully
     // change mid-fetch, and search() re-filters with the current value.)
-    const tags = booruTags(q);
+    const tags = formatQueryFor("safebooru", q);
     const m = minRes();
     const out = [];
     let examined = 0;
@@ -354,26 +445,7 @@ const SOURCES = {
   },
 
   async wallhaven(q) {
-    const p = purity();
-    const params = new URLSearchParams({
-      q, categories: "111", sorting: "relevance", order: "desc", page: "1",
-      // Safe: sfw only (100). Mixed: sfw + sketchy (110) — works without an
-      // API key, verified live 2026-11-15. NSFW: 001 — the API returns 0
-      // results for anonymous requests (verified live 2026-11-15: total 0
-      // for "code geass", "anime" and even an empty query; the docs say
-      // "NSFW wallpapers are blocked to guests"), so a key is required.
-      // The key is only sent when set in Settings; without one the adapter
-      // throws and the status pill explains why instead of showing 0.
-      purity: p === "safe" ? "100" : p === "mixed" ? "110" : "001",
-    });
-    if (p === "nsfw") {
-      const keyEl = $("#wh-key");
-      const key = keyEl ? keyEl.value.trim() : "";
-      if (!key) throw new Error("needs a Wallhaven API key for NSFW — paste one in Settings (free, from your Wallhaven account)");
-      params.set("apikey", key);
-    }
-    const m = minRes();
-    if (m) params.set("atleast", `${m.w}x${m.h}`);
+    const params = wallhavenParams(q);
     const { data, via } = await fetchJson(`https://wallhaven.cc/api/v1/search?${params}`, true);
     const out = (data.data || []).map((w) => ({
       thumb: w.thumbs.large,
@@ -389,6 +461,7 @@ const SOURCES = {
       // sorting=favorites. "code geass" sample (2026-11-15, relevance
       // page): favorites median 12, max 44; views median 5,286.
       score: w.favorites,
+      fileSize: typeof w.file_size === "number" ? w.file_size : null,
     }));
     out.via = via;
     return out;
@@ -399,6 +472,36 @@ const SOURCES = {
   // lives in adapters-extra.js and registers itself into SOURCES.
 };
 
+// Wallhaven search parameters, factored out of the adapter so the color
+// wiring is unit-testable (harness Group G). The `colors` param is only set
+// when a swatch is chosen — "" means no color filter, exactly like the API
+// with the parameter omitted.
+function wallhavenParams(q) {
+  const p = purity();
+  const params = new URLSearchParams({
+    q: formatQueryFor("wallhaven", q), categories: "111", sorting: "relevance", order: "desc", page: "1",
+    // Safe: sfw only (100). Mixed: sfw + sketchy (110) — works without an
+    // API key, verified live 2026-11-15. NSFW: 001 — the API returns 0
+    // results for anonymous requests (verified live 2026-11-15: total 0
+    // for "code geass", "anime" and even an empty query; the docs say
+    // "NSFW wallpapers are blocked to guests"), so a key is required.
+    // The key is only sent when set in Settings; without one the adapter
+    // throws and the status pill explains why instead of showing 0.
+    purity: p === "safe" ? "100" : p === "mixed" ? "110" : "001",
+  });
+  const wc = wallColor();
+  if (wc) params.set("colors", wc);
+  if (p === "nsfw") {
+    const keyEl = $("#wh-key");
+    const key = keyEl ? keyEl.value.trim() : "";
+    if (!key) throw new Error("needs a Wallhaven API key for NSFW — paste one in Settings (free, from your Wallhaven account)");
+    params.set("apikey", key);
+  }
+  const m = minRes();
+  if (m) params.set("atleast", `${m.w}x${m.h}`);
+  return params;
+}
+
 // --- Sorting ---
 // The last fetched result set is kept in memory so changing the sort order
 // re-renders instantly without re-searching.
@@ -407,7 +510,8 @@ let lastReports = [];
 let lastQuery = "";
 
 function sortMode() {
-  return ($("#sort") && $("#sort").value) || "best";
+  const el = $("#sort");
+  return (el && el.value) || "best";
 }
 
 // Epoch ms for an item's date, or NaN when the source gives no date
@@ -439,30 +543,64 @@ function bestRank(list) {
       }
     }
   }
-  // Returns 0..1 for scored items, -1 for unscored ones.
-  return (r) => {
-    if (typeof r.score !== "number" || r.score <= 0) return -1;
-    const max = maxBySource.get(r.source);
-    if (!max) return -1;
-    return Math.log10(1 + r.score) / max;
-  };
+  // Returns a Map from item -> { rank, area }: the normalised 0..1 rank
+  // (or -1 for unscored items) and the pixel area, computed ONCE per item.
+  // The old version returned a rank function that recomputed
+  // Math.log10(1 + score) on every comparison (~2,000 log10 calls for a
+  // 159-item sort) and re-multiplied width x height for every area
+  // tiebreak; the comparator below is now pure Map lookups.
+  const out = new Map();
+  for (const r of list) {
+    let rank = -1;
+    if (typeof r.score === "number" && r.score > 0) {
+      const max = maxBySource.get(r.source);
+      if (max) rank = Math.log10(1 + r.score) / max;
+    }
+    out.set(r, { rank, area: (r.width || 0) * (r.height || 0) });
+  }
+  return out;
 }
 
 function sortResults(list) {
   const mode = sortMode();
   if (mode === "source") return list; // arrival order, as the sources returned them
   if (mode === "best") {
-    const rank = bestRank(list);
-    return [...list].sort((a, b) => {
-      const ra = rank(a), rb = rank(b);
-      if (ra !== rb) return rb - ra; // unscored (-1) sorts last
-      if (ra < 0) return 0; // both unscored: keep arrival order
+    const rankByItem = bestRank(list);
+    const sorted = [...list].sort((a, b) => {
+      const A = rankByItem.get(a), B = rankByItem.get(b);
+      if (A.rank !== B.rank) return B.rank - A.rank; // unscored (-1) sorts last
+      if (A.rank < 0) return 0; // both unscored: keep arrival order
       // Both scored with the same normalised rank: raw score first, then
       // size — both are deterministic tiebreaks, and bigger is better
       // for a wallpaper.
       if (b.score !== a.score) return b.score - a.score;
-      return (b.width * b.height) - (a.width * a.height);
+      return B.area - A.area;
     });
+    // Interleave the sources round-robin: the best item of every source
+    // first, then the second-best of every source, and so on. Without this
+    // the sort above puts every scored item (Danbooru + Wallhaven) before
+    // every unscored one (Safebooru + all scrapers), so the top ~64 were
+    // two sources and the best results from the other sources sat buried
+    // at the bottom. Source order within each round is first-appearance
+    // order in the best-sorted list, so the highest-ranked source leads
+    // each round. Within a source the order above is kept.
+    const groups = new Map(); // source -> { items, next }, in first-appearance order
+    for (const r of sorted) {
+      let g = groups.get(r.source);
+      if (!g) { g = { items: [], next: 0 }; groups.set(r.source, g); }
+      g.items.push(r);
+    }
+    const out = [];
+    let more = true;
+    while (more) {
+      more = false;
+      for (const g of groups.values()) {
+        // Index cursor, not shift(): shift() memmoves the rest of the
+        // array on every item (O(n) per card dealt).
+        if (g.next < g.items.length) { out.push(g.items[g.next++]); more = true; }
+      }
+    }
+    return out;
   }
   if (mode === "newest") {
     // Dated items first, newest first; dateless items after them, in arrival order.
@@ -483,9 +621,11 @@ function renderSiteLinks(q) {
     `<a href="${fn(q)}" target="_blank" rel="noopener">${name} ↗</a>`).join("");
 }
 
+const HTML_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  // The map is hoisted: the old version built a fresh object literal for
+  // every matched character (~600 calls per render, several chars each).
+  return String(s).replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
 }
 
 // Short, scannable reason for a failed source (full message goes in the pill's title).
@@ -672,16 +812,151 @@ function imgLoaded(img) {
 // backstop if a cached verdict goes stale (see imgThumbError).
 const probedFullUrls = new Set();
 
+// --- Preload ---
+// How much full-image data to fetch up front, in bytes, while the user
+// waits after a search — "when you start and wait, you put how many GB
+// you wait for, and it continues to load as you go". This is NOT a cap:
+// once the target is reached eager preloading stops, but on-demand loading
+// (the IntersectionObserver below) keeps working as the user scrolls —
+// nothing is ever blocked by the number. Off (0) = no preloading, the
+// old lazy behaviour. Default 1 GB: at typical full sizes (0.5–10 MB)
+// that is roughly 100–500 wallpapers ready while the user waits, without
+// saturating the connection for very long.
+//
+// Byte counting is honest about being approximate. Danbooru and Wallhaven
+// report an exact file_size per item (verified live 2026-11-15); Safebooru
+// and all scrapers do not, so those are estimated at 0.5 bytes per pixel
+// from the known dimensions (observed range across real files: ~0.1 for a
+// flat Danbooru jpg to ~1.4 for a big AlphaCoders PNG; 0.5 is the middle),
+// or a flat 5 MB when even the dimensions are unknown. A successful
+// upgrade is charged once, at the FULL file's cost, even if a smaller
+// alternate is what actually loaded (a conservative ceiling); failed or
+// timed-out probes charge nothing (their partial bytes are uncounted).
+// The meter therefore reads "≈" throughout. Counting via the local proxy
+// was considered and rejected: only Zerochan images go through it now, so
+// it would see a small fraction of the bytes, and the browser's Resource
+// Timing sizes are zeroed for cross-origin images without
+// Timing-Allow-Origin, which these CDNs don't send.
+const PRELOAD_DEFAULT = 1073741824; // 1 GB
+const PRELOAD_VALUES = ["0", "536870912", "1073741824", "2147483648", "5368709120"];
+let preloadSpent = 0; // bytes charged to eager preloads, this search
+let preloadQueue = []; // card <img>s in display order, rebuilt per render
+let preloadIndex = 0; // next queue entry to consider (only advances past an
+// item once its upgrade starts or it is skipped — so an item that doesn't
+// fit the remaining target stays queued and is retried if the target grows)
+let preloadInFlight = false;
+let preloadRunning = false;
+
+// The preload controls never leave the page, but the pump used to
+// re-query the DOM for them on every card: updatePreloadMeter() reads
+// #preload-meter and preloadTarget() reads #data-preload, and the pump
+// calls both ~3x per card — ~5 DOM queries per preloaded card, ~500 for
+// a full 100-card preload. Cache the elements once (lazily, so a missing
+// element is retried instead of cached as null); the select's VALUE is
+// still read fresh every time, so changing it — or setting it directly,
+// as the harness does — always takes effect.
+let preloadElCache = null;
+let preloadMeterElCache = null;
+function preloadTarget() {
+  if (!preloadElCache) preloadElCache = $("#data-preload");
+  const v = preloadElCache ? Number(preloadElCache.value) : 0;
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+function preloadCost(r) {
+  if (typeof r.fileSize === "number" && r.fileSize > 0) return Math.round(r.fileSize);
+  const w = r.width || 0, h = r.height || 0;
+  if (w > 0 && h > 0) return Math.round(w * h * 0.5);
+  return 5 * 1024 * 1024;
+}
+
+function fmtBytes(n) {
+  if (n >= 1073741824) return `${(n / 1073741824).toFixed(1)} GB`;
+  if (n >= 1048576) return `${Math.round(n / 1048576)} MB`;
+  return `${Math.round(n / 1024)} KB`;
+}
+
+function updatePreloadMeter() {
+  if (!preloadMeterElCache) preloadMeterElCache = $("#preload-meter");
+  const el = preloadMeterElCache;
+  if (!el) return;
+  const target = preloadTarget();
+  if (!target) { el.textContent = "Preload off"; return; }
+  if (preloadRunning) { el.textContent = `Preloading ≈ ${fmtBytes(preloadSpent)} / ${fmtBytes(target)}…`; return; }
+  if (preloadSpent > 0) { el.textContent = `Preloaded ≈ ${fmtBytes(preloadSpent)}`; return; }
+  el.textContent = `Preload ${fmtBytes(target)}`;
+}
+
+// One eager upgrade at a time, in display order, until the target is
+// reached. Sequential on purpose: it leaves two of the three probe slots
+// free, so scrolling never queues behind a preload. Skips cards that are
+// detached or already upgrading/upgraded (the observer may have beaten it
+// there — those bytes are on-demand, not preload, and aren't counted).
+// The chain is self-perpetuating: each completion re-pumps, so a stopped
+// chain (target reached, queue drained) restarts on the next render or
+// when the user raises the target. Does not run in the Favorites view —
+// a handful of deliberate picks, and the observer upgrades those on
+// demand anyway.
+function pumpPreload() {
+  if (preloadInFlight) return;
+  const target = preloadTarget();
+  if (!target || favsView) { preloadRunning = false; updatePreloadMeter(); return; }
+  let img = null;
+  while (preloadIndex < preloadQueue.length) {
+    img = preloadQueue[preloadIndex];
+    if (!img.isConnected || img.dataset.upgradeStarted) { preloadIndex++; continue; }
+    break;
+  }
+  if (!img || preloadIndex >= preloadQueue.length) { preloadRunning = false; updatePreloadMeter(); return; }
+  const cost = Number(img.dataset.cost) || 0;
+  // Doesn't fit the remaining target: stop here WITHOUT consuming the
+  // item, so raising the target later resumes with it.
+  if (preloadSpent + cost > target) { preloadRunning = false; updatePreloadMeter(); return; }
+  preloadIndex++;
+  preloadRunning = true;
+  preloadInFlight = true;
+  updatePreloadMeter();
+  loadFullImage(img, (status) => {
+    preloadInFlight = false;
+    if (status === "downloaded") {
+      preloadSpent += cost;
+      updatePreloadMeter();
+    }
+    queueMicrotask(pumpPreload);
+  });
+}
+
+function restartPreload() {
+  const box = $("#results");
+  preloadQueue = box ? [...box.querySelectorAll(".card img")] : [];
+  preloadIndex = 0;
+  updatePreloadMeter();
+  pumpPreload();
+}
+
 // Upgrade one card's visible image to full resolution (or the next working
-// alternate). Runs once per img; safe to call again (no-op).
-function loadFullImage(img) {
-  if (!img.isConnected || img.dataset.upgradeStarted) return;
+// alternate). Runs once per img; safe to call again (no-op). onDone, when
+// given, fires exactly once with what happened: "downloaded" (a probe
+// succeeded and bytes were fetched), "cached" (already showing the full
+// image, or a previously verified URL swapped in — no new download),
+// "skipped" (thumb-only card, or the card is gone / already upgrading),
+// "failed" (every candidate failed, or the upgrade was cancelled). The
+// preload pump uses it to charge bytes and feed the next card; ordinary
+// callers (the observer, imgThumbError) pass nothing and are unaffected.
+function loadFullImage(img, onDone) {
+  let doneCalled = false;
+  const done = (status) => {
+    if (doneCalled) return;
+    doneCalled = true;
+    if (onDone) onDone(status);
+  };
+  if (!img.isConnected || img.dataset.upgradeStarted) { done("skipped"); return; }
   img.dataset.upgradeStarted = "1";
   // Some sources (Wallpapers.com) serve the card-sized thumbnail fine but
   // their full-size files are multi-MB on a CDN that stalls past the probe
   // timeout here. Keep the thumbnail: probing would only burn a slot, then
   // hide a perfectly good image behind the failure placeholder.
-  if (img.dataset.thumbOnly) { img.dataset.state = "thumb"; return; }
+  if (img.dataset.thumbOnly) { img.dataset.state = "thumb"; done("skipped"); return; }
   // Candidates in order: full, then alternates (smaller versions of the
   // same image). Deduped — e.g. WallpaperCave's thumb IS its full image.
   const candidates = [img.dataset.full, ...(img.dataset.alts ? img.dataset.alts.split("|").filter(Boolean) : [])]
@@ -689,6 +964,7 @@ function loadFullImage(img) {
   // Already showing the full image (WallpaperCave): nothing to upgrade.
   if (candidates.length === 1 && img.getAttribute("src") === candidates[0]) {
     img.dataset.state = "full";
+    done("cached");
     return;
   }
   // This full URL already verified in an earlier render (e.g. a sort
@@ -699,6 +975,7 @@ function loadFullImage(img) {
     img.src = img.dataset.full;
     img.style.visibility = "";
     img.dataset.state = "full";
+    done("cached");
     return;
   }
   let i = 0;
@@ -708,19 +985,30 @@ function loadFullImage(img) {
   // discarded — e.g. a new search or a filter change rebuilds the grid.
   // Without this, a stalled probe keeps downloading a multi-MB file for an
   // image that will never be shown (up to the 15 s timeout, twice).
-  img._cancelUpgrade = () => { dead = true; if (cancelProbe) cancelProbe(); };
+  img._cancelUpgrade = () => {
+    dead = true;
+    if (cancelProbe) cancelProbe();
+    done("failed"); // a discarded mid-probe card must not stall the pump
+  };
   const tryNext = () => {
-    if (dead || !img.isConnected) return;
-    if (i >= candidates.length) { markImageFailed(img); return; }
+    // The card is gone — normally _cancelUpgrade already fired done()
+    // (dead), but if the img was detached some other way the pump's onDone
+    // must still fire exactly once or the pump stalls forever.
+    if (dead || !img.isConnected) { done("failed"); return; }
+    if (i >= candidates.length) { markImageFailed(img); done("failed"); return; }
     const url = candidates[i++];
     cancelProbe = probeUrl(url, (ok) => {
       cancelProbe = null;
-      if (dead || !img.isConnected) return;
+      // The card is gone — normally _cancelUpgrade already fired done()
+      // (dead), but if the img was detached some other way the pump's
+      // onDone must still fire exactly once or the pump stalls forever.
+      if (dead || !img.isConnected) { done("failed"); return; }
       if (ok) {
         probedFullUrls.add(url);
         img.src = url;
         img.style.visibility = "";
         img.dataset.state = "full";
+        done("downloaded");
       } else {
         tryNext();
       }
@@ -804,10 +1092,6 @@ function saveFavs() {
   }
 }
 
-function isFav(page) {
-  return favorites.some((f) => f.page === page);
-}
-
 function favSnapshot(r) {
   return {
     thumb: r.thumb,
@@ -820,6 +1104,7 @@ function favSnapshot(r) {
     date: r.date || null,
     score: typeof r.score === "number" ? r.score : null,
     thumbOnly: !!r.thumbOnly,
+    fileSize: typeof r.fileSize === "number" ? r.fileSize : null,
   };
 }
 
@@ -873,6 +1158,24 @@ let cardByPage = new Map();
 let lastRenderProxyUp = false;
 let lastRenderFavsView = false;
 
+// Discard every card currently on screen: abort its in-flight full-res
+// upgrade (otherwise the probe downloads to completion for an image that
+// will never be shown — and, worse, a preload probe whose card is gone
+// never fires its onDone, which stalls the preload pump forever) and drop
+// the old images from the observer (detached nodes never intersect, so
+// they would never be unobserved). Call before ANY innerHTML replacement
+// of #results — the empty-state branch, the full rebuild, search()'s
+// skeleton render, and the Favorites toggle's idle restore. The sort-only
+// fast path must NOT call this: its cards stay on screen, only reordered.
+function discardRenderedCards() {
+  const box = $("#results");
+  if (!box) return;
+  box.querySelectorAll(".card img").forEach((img) => {
+    if (typeof img._cancelUpgrade === "function") img._cancelUpgrade();
+  });
+  if (imageObserver) imageObserver.disconnect();
+}
+
 function renderResults(results, reports, q) {
   const seen = new Set();
   const uniq = results.filter((r) => {
@@ -889,8 +1192,18 @@ function renderResults(results, reports, q) {
   // its own pill, following the min-res "hidden by filter" pattern.
   // (The ratio mode is read once here, not once per item.)
   const ratioMode = deviceRatio();
-  const visible = sorted.filter((r) => passesDeviceRatio(r, ratioMode));
+  let visible = sorted.filter((r) => passesDeviceRatio(r, ratioMode));
   const ratioHidden = sorted.length - visible.length;
+  // Result limit (search only — favorites always show all): cap the cards
+  // actually rendered, so a search never builds ~200 cards, ~200 thumbs
+  // and ~200 full-res probes at once. Applied after the ratio filter, so
+  // the limit counts what would actually show; the sort-only fast path
+  // below keys on visible.length, so a limit change rebuilds (new set)
+  // while a sort change with the same limit still reorders in place.
+  // The hidden count gets its own pill, like the ratio filter's.
+  const limit = favsView ? 0 : resultLimit();
+  const limitHidden = limit > 0 ? Math.max(0, visible.length - limit) : 0;
+  if (limit > 0) visible = visible.slice(0, limit);
 
   // Rebuild the on-screen lookup the heart button's click handler uses.
   renderedByPage.clear();
@@ -908,12 +1221,18 @@ function renderResults(results, reports, q) {
     ? `<span class="status-pill pill-total"><strong>${visible.length} result${visible.length === 1 ? "" : "s"}</strong></span>`
     : "") + (ratioHidden > 0
     ? `<span class="status-pill pill-ratio">${ratioHidden} hidden by ratio filter</span>`
+    : "") + (limitHidden > 0
+    ? `<span class="status-pill pill-limit">${limitHidden} more — raise the limit to see them</span>`
     : "");
 
   const box = $("#results");
   if (!visible.length) {
     // No cards on screen any more — the sort-only cache is empty too.
     cardByPage = new Map();
+    // Discard first: the empty state replaces the cards, and an in-flight
+    // upgrade on a discarded card would never report back (see
+    // discardRenderedCards) — the preload pump would stall forever.
+    discardRenderedCards();
     if (favsView && !uniq.length) {
       box.innerHTML = `
       <div class="empty-state">
@@ -979,19 +1298,20 @@ function renderResults(results, reports, q) {
       && localProxyUp === lastRenderProxyUp && favsView === lastRenderFavsView
       && visible.every((r) => { const el = cardByPage.get(r.page); return el && el.isConnected; })) {
     for (const r of visible) box.appendChild(cardByPage.get(r.page));
+    restartPreload(); // same cards, new order — preload follows the new order
     return;
   }
   // Full rebuild: abort in-flight full-res probes for the cards about to
   // be discarded — their downloads would otherwise run to completion (or
   // the 15 s timeout, twice) for images that will never be shown.
-  box.querySelectorAll(".card img").forEach((img) => {
-    if (typeof img._cancelUpgrade === "function") img._cancelUpgrade();
-  });
-  // A re-render replaces every card: drop the old (now detached) images
-  // from the observer, or they accumulate forever — detached nodes never
-  // intersect, so they would never be unobserved. The observer stays
-  // usable for the new cards below.
-  if (imageObserver) imageObserver.disconnect();
+  // (Also drops the old images from the observer — see discardRenderedCards.)
+  discardRenderedCards();
+  // Favorite lookup for the card template below: isFav() was a linear
+  // scan of the favorites list, called once per card — with dozens of
+  // favorites that's ~10k string comparisons per render. One Set per
+  // render instead; rebuilt here because `favorites` changes between
+  // renders (and the fast path above returns before this point).
+  const favPages = new Set(favorites.map((f) => f.page));
   box.innerHTML = visible.map((r) => {
     const res = (r.width && r.height) ? `${r.width}×${r.height}` : "size unknown";
     // Thumb first: the small thumbnail loads in <1 s and fills the box
@@ -1019,12 +1339,14 @@ function renderResults(results, reports, q) {
         : `aspect-ratio:4 / 3`;
     const thumbSrc = proxiedImageUrl(r.thumb);
     const fullUrl = proxiedImageUrl(r.full);
+    // What an upgrade of this card costs the preload meter (see preloadCost).
+    const cost = preloadCost(r);
     const alts = (r.alts || []).filter((u) => u && u !== r.full).map(proxiedImageUrl);
-    // Favorite state read once per card (was three isFav() scans of the list).
-    const fav = isFav(r.page);
+    // Favorite state read once per card, from the per-render Set above.
+    const fav = favPages.has(r.page);
     return `
     <article class="card">
-      <a class="thumb" href="${fullUrl}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${thumbSrc}" data-full="${escapeHtml(fullUrl)}" data-alts="${escapeHtml(alts.join("|"))}"${r.thumbOnly ? ' data-thumb-only="1"' : ""} data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
+      <a class="thumb" href="${fullUrl}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${thumbSrc}" data-full="${escapeHtml(fullUrl)}" data-alts="${escapeHtml(alts.join("|"))}"${r.thumbOnly ? ' data-thumb-only="1"' : ""} data-cost="${cost}" data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
         <span class="badge badge-res">${res}</span>
         <span class="badge badge-src">${r.source}</span>
       </a>
@@ -1051,6 +1373,7 @@ function renderResults(results, reports, q) {
   cardByPage = new Map(visible.map((r, i) => [r.page, cards[i]]));
   lastRenderProxyUp = localProxyUp;
   lastRenderFavsView = favsView;
+  restartPreload();
 }
 
 async function search(ev) {
@@ -1060,10 +1383,18 @@ async function search(ev) {
   if (!q) return;
   // A new search shows search results, not the Favorites view.
   setFavsView(false);
+  // New search session: the preload meter starts over (bytes already
+  // downloaded stay downloaded — the meter counts this search's preloads).
+  preloadSpent = 0;
+  updatePreloadMeter();
   renderSiteLinks(q);
 
   const chosen = $$(".source:checked").map((c) => c.value);
   $("#status").innerHTML = `<span class="status-pill pill-busy"><span class="spinner"></span>Searching ${chosen.length} source${chosen.length === 1 ? "" : "s"}…</span>`;
+  // The skeletons replace the cards — discard their in-flight upgrades
+  // first (see discardRenderedCards), or an orphaned probe stalls the
+  // preload pump and keeps downloading for a card that is already gone.
+  discardRenderedCards();
   $("#results").innerHTML = Array.from({ length: 8 }, () =>
     `<div class="skeleton" aria-hidden="true"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>`).join("");
   // The skeletons replace the cards — drop the sort-only cache (its entries
@@ -1094,6 +1425,7 @@ async function search(ev) {
         ? ` (via ${via}${!localProxyUp && PUBLIC_VIAS.includes(via) ? " — public proxy" : ""})`
         : "";
       let msg = `${passing.length} found${viaLabel}`;
+      if (name === "wallhaven" && wallColor()) msg += ` · color #${wallColor()}`;
       // In Mixed mode, say what each source actually includes: Danbooru and
       // Wallhaven filter by rating/purity; Safebooru is a safe-only site;
       // the scraped sites have no purity filter at all. In Safe mode the
@@ -1144,6 +1476,23 @@ $("#device-ratio").addEventListener("change", () => {
   if (favsView) renderFavsView();
   else if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
 });
+const limitEl = $("#limit");
+if (limitEl) limitEl.addEventListener("change", () => {
+  saveSettings();
+  if (favsView) renderFavsView();
+  else if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
+});
+const preloadEl = $("#data-preload");
+if (preloadEl) preloadEl.addEventListener("change", () => {
+  saveSettings();
+  updatePreloadMeter();
+  pumpPreload(); // raising the target resumes a stopped chain; lowering it
+  // stops the pump at its next check (already-spent bytes stay spent)
+});
+// Color swatches: persist the choice (and the pressed state) immediately;
+// it applies to Wallhaven on the next search, like the Content select.
+// No auto re-search — same as changing purity.
+$$(".swatch").forEach((b) => b.addEventListener("click", () => setWallColor(b.dataset.color || "")));
 // Favorites toggle: show only saved favorites (in the current sort order),
 // or go back to the last search results (or the idle state if none yet).
 const favsToggleBtn = $("#favs-toggle");
@@ -1151,7 +1500,7 @@ if (favsToggleBtn) favsToggleBtn.addEventListener("click", () => {
   if (favsView) {
     setFavsView(false);
     if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
-    else $("#results").innerHTML = idleResultsHtml;
+    else { discardRenderedCards(); $("#results").innerHTML = idleResultsHtml; }
   } else {
     renderFavsView();
   }
