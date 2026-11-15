@@ -4,67 +4,105 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Wallpaper Meta-Search</title>
+<meta name="description" content="One search box, every wallpaper source — Wallhaven, Danbooru, Safebooru, AlphaCoders and more.">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header>
-  <h1>Wallpaper Meta-Search</h1>
-  <p>One search box, every wallpaper source. Results come from the sites that let a browser ask them directly, plus a CORS proxy for the ones that don't. No server, no account, no tracking.</p>
-</header>
+<div class="page">
 
-<main>
-  <form id="search-form">
-    <input id="query" type="search" placeholder="e.g. code geass emperor lelouch" autocomplete="off" required>
-    <button type="submit">Search all</button>
-  </form>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="16.2" y1="16.2" x2="21" y2="21"/></svg>
+      </span>
+      <div class="brand-text">
+        <h1>Wallpaper Meta-Search</h1>
+        <p class="tagline">One search, every wallpaper source.</p>
+      </div>
+    </div>
+    <p class="top-note">No server &middot; No account &middot; No tracking</p>
+  </header>
 
-  <section class="controls">
-    <fieldset>
-      <legend>Sources (inline results)</legend>
-      <label><input type="checkbox" class="source" value="danbooru" checked> Danbooru</label>
-      <label><input type="checkbox" class="source" value="safebooru" checked> Safebooru</label>
-      <label><input type="checkbox" class="source" value="wallhaven" checked> Wallhaven</label>
-      <label><input type="checkbox" class="source" value="alphacoders"> AlphaCoders <span class="hint">(needs API key)</span></label>
-    </fieldset>
+  <main>
+    <section class="hero">
+      <form id="search-form" role="search">
+        <div class="search-box">
+          <svg class="search-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="16.2" y1="16.2" x2="21" y2="21"/></svg>
+          <input id="query" type="search" placeholder="Try &ldquo;code geass emperor lelouch&rdquo;&hellip;" autocomplete="off" required>
+          <button type="submit">Search all</button>
+        </div>
+      </form>
+      <p class="hero-sub">Results come from the sites that let a browser ask them directly, plus a CORS proxy for the ones that don&rsquo;t. Nothing is cached or re-hosted.</p>
+    </section>
 
-    <label>Min. resolution
-      <select id="min-res">
-        <option value="0">Any</option>
-        <option value="1920x1080" selected>1920&times;1080+</option>
-        <option value="2560x1440">2560&times;1440+</option>
-        <option value="3440x1440">3440&times;1440+</option>
-      </select>
-    </label>
+    <section class="toolbar" aria-label="Search options">
+      <div class="chip-group" role="group" aria-label="Sources with inline results">
+        <span class="group-label">Sources</span>
+        <label class="chip"><input type="checkbox" class="source" value="danbooru" checked><span class="chip-dot" aria-hidden="true"></span>Danbooru</label>
+        <label class="chip"><input type="checkbox" class="source" value="safebooru" checked><span class="chip-dot" aria-hidden="true"></span>Safebooru</label>
+        <label class="chip"><input type="checkbox" class="source" value="wallhaven" checked><span class="chip-dot" aria-hidden="true"></span>Wallhaven</label>
+        <label class="chip"><input type="checkbox" class="source" value="alphacoders" checked><span class="chip-dot" aria-hidden="true"></span>AlphaCoders</label>
+        <label class="chip"><input type="checkbox" class="source" value="wallpapersdotcom" checked><span class="chip-dot" aria-hidden="true"></span>Wallpapers.com</label>
+        <label class="chip"><input type="checkbox" class="source" value="wallpapercave" checked><span class="chip-dot" aria-hidden="true"></span>WallpaperCave</label>
+        <label class="chip"><input type="checkbox" class="source" value="zerochan" checked><span class="chip-dot" aria-hidden="true"></span>Zerochan</label>
+      </div>
 
-    <label><input type="checkbox" id="sfw" checked> Safe / SFW only</label>
-  </section>
+      <div class="toolbar-right">
+        <label class="field">Min. resolution
+          <select id="min-res">
+            <option value="0">Any</option>
+            <option value="1920x1080" selected>1920&times;1080+</option>
+            <option value="2560x1440">2560&times;1440+</option>
+            <option value="3440x1440">3440&times;1440+</option>
+          </select>
+        </label>
+        <label class="switch"><input type="checkbox" id="sfw" checked><span class="track" aria-hidden="true"><span class="knob"></span></span><span class="switch-text">Safe / SFW only</span></label>
+      </div>
+    </section>
 
-  <details class="settings">
-    <summary>Settings &amp; why some sources need a proxy</summary>
-    <p>Wallhaven, Safebooru and AlphaCoders don't send the header that lets a web page query them directly, so those requests go through a public CORS proxy. Danbooru allows direct requests and never touches the proxy. If a proxied source comes back empty, the proxy is probably down — pick another one, or use the site links below.</p>
-    <label>CORS proxy (prefix, the target URL is appended, URL-encoded)
-      <input id="proxy" type="url" size="60" placeholder="https://api.allorigins.win/raw?url=">
-    </label>
-    <label>AlphaCoders API key <span class="hint">(free, from your AlphaCoders account &rarr; API; stored only in this browser)</span>
-      <input id="alpha-key" type="text" size="40" autocomplete="off">
-    </label>
-    <p class="hint">Prefer no proxy at all? Run the optional local proxy in <code>proxy/</code> (<code>node server.mjs</code>) and set the proxy to <code>http://localhost:8787/?url=</code>.</p>
-  </details>
+    <details class="settings">
+      <summary><span class="summary-label">Settings &amp; why some sources need a proxy</span><span class="chev" aria-hidden="true"></span></summary>
+      <div class="settings-body">
+        <p>Wallhaven, Safebooru and the other non-Danbooru sources don&rsquo;t send the header that lets a web page query them directly, so those requests go through a proxy chain: your <strong>local proxy</strong> first (run <code>start.sh</code> / <code>start.bat</code>), then your own <strong>Cloudflare Worker</strong> if you set one up (see <code>worker/README.md</code>), then a custom proxy if you enter one, then public fallbacks (corsfix, allorigins, cors.lol — flaky, tried last). Danbooru allows direct requests and never touches a proxy. The status line under each search tells you which path actually worked.</p>
+        <p id="proxy-status" class="hint">Checking for local proxy…</p>
+        <label class="settings-field">Your Cloudflare Worker URL <span class="hint">(optional — most reliable; paste the URL after deploying <code>worker/</code>)</span>
+          <input id="worker-url" type="url" placeholder="https://wallpaper-meta-search-proxy.&lt;you&gt;.workers.dev">
+        </label>
+        <label class="settings-field">Custom CORS proxy <span class="hint">(optional — prefix, the target URL is appended URL-encoded; tried after the Worker)</span>
+          <input id="proxy" type="url" placeholder="https://api.allorigins.win/raw?url=">
+        </label>
+      </div>
+    </details>
 
-  <section id="site-links">
-    <h2>Also search on</h2>
-    <p>These sites have no usable open API, so they can't show results inline — one click opens their own search for the same query:</p>
-    <div id="site-buttons"></div>
-  </section>
+    <section class="site-links" aria-label="Search on other sites">
+      <div class="site-links-head">
+        <h2>Also search on</h2>
+        <p>WallpaperAccess and Gelbooru can&rsquo;t show results inline (see README), so one click opens their own search for the same query.</p>
+      </div>
+      <div id="site-buttons"></div>
+    </section>
 
-  <p id="status" aria-live="polite"></p>
-  <section id="results"></section>
-</main>
+    <div id="status" class="status-row" aria-live="polite"></div>
 
-<footer>
-  <p>Sources are searched live; nothing is cached or re-hosted. Respect each site's terms. Wallhaven, AlphaCoders, Danbooru and Safebooru are not affiliated with this project.</p>
-</footer>
+    <section id="results" class="results" aria-live="polite">
+      <div class="empty-state idle">
+        <div class="empty-icon" aria-hidden="true">
+          <svg viewBox="0 0 64 64" width="72" height="72" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="10" width="44" height="34" rx="6"/><circle cx="21" cy="23" r="4.5"/><path d="M10 38l11-11 9 9 7-7 11 11"/><circle cx="48" cy="46" r="9"/><line x1="54.5" y1="52.5" x2="60" y2="58"/></svg>
+        </div>
+        <h2>Find your next wallpaper</h2>
+        <p>Type something above and hit <strong>Search all</strong> — results from Danbooru, Safebooru, Wallhaven, AlphaCoders, Wallpapers.com, WallpaperCave and Zerochan land here in one grid.</p>
+        <p class="hint">Tip: one or two words work best, e.g. <em>code geass</em> or <em>emperor lelouch</em>.</p>
+      </div>
+    </section>
+  </main>
 
+  <footer>
+    <p>Sources are searched live; nothing is cached or re-hosted. Respect each site&rsquo;s terms. Wallhaven, AlphaCoders, Danbooru, Safebooru, Wallpapers.com, WallpaperCave and Zerochan are not affiliated with this project.</p>
+  </footer>
+
+</div>
+<script src="proxy-client.js"></script>
 <script src="app.js"></script>
+<script src="adapters-extra.js"></script>
 </body>
 </html>

@@ -1,7 +1,8 @@
 // Optional local CORS proxy for Wallpaper Meta-Search.
 // Usage: node server.mjs   (Node 18+; no dependencies)
 // Then set the app's CORS proxy to: http://localhost:8787/?url=
-// It only fetches the wallpaper APIs the app uses and adds CORS headers.
+// It only fetches the wallpaper APIs and public search pages the app uses
+// (see ALLOWED) and adds CORS headers.
 // Do NOT expose this to the internet — it is an open proxy by design.
 import http from "node:http";
 
@@ -10,6 +11,12 @@ const ALLOWED = [
   /^https:\/\/wallhaven\.cc\/api\//,
   /^https:\/\/safebooru\.org\/index\.php\?page=dapi/,
   /^https:\/\/wall\.alphacoders\.com\/api2\.0\//,
+  /^https:\/\/wallpapers\.com\//,
+  /^https:\/\/wallpapercave\.com\//,
+  /^https:\/\/wall\.alphacoders\.com\/search\.php/,
+  /^https:\/\/alphacoders\.com\//,
+  /^https:\/\/wallpaperaccess\.com\//,
+  /^https:\/\/www\.zerochan\.net\//,
 ];
 
 const server = http.createServer(async (req, res) => {
@@ -18,7 +25,7 @@ const server = http.createServer(async (req, res) => {
   const target = new URL(req.url, "http://localhost").searchParams.get("url");
   if (!target || !ALLOWED.some((re) => re.test(target))) {
     res.writeHead(400, { "Content-Type": "text/plain" });
-    res.end("Usage: /?url=<wallhaven|safebooru|alphacoders api url>\n");
+    res.end("Usage: /?url=<allowed api/search url>\n");
     return;
   }
   try {
