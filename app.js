@@ -9,6 +9,29 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 
+// Whether the local proxy was up at the last probe (set by
+// updateProxyStatus). Used for image URLs (route through it when up) and
+// for honest failure pills (when down, a proxied source failing is most
+// likely the missing proxy — see shortReason). Initial value false: the
+// probe resolves in milliseconds on localhost, so by the time a search
+// finishes it reflects reality.
+let localProxyUp = false;
+const pageIsHttp = typeof window !== "undefined" && window.location.protocol === "http:";
+
+// Route an image URL through the local proxy when it is up (http pages
+// only — an https page can't fetch http://localhost). The proxy sends no
+// Referer and a plain UA, which dodges Referer-based hotlink blocks, and
+// it fetches over the machine's own network — the same path the search
+// fetches take. Verified 2026-11-15: Zerochan full images that STALLED
+// mid-download direct (30 s timeout, 200 status) came through the proxy
+// in ~2.4 s. When the proxy is down, images load direct as before.
+// NOTE: the proxy does NOT change the egress IP, so it can't dodge an
+// IP-based block (e.g. a CDN 403ing a datacenter/VPN IP).
+function proxiedImageUrl(u) {
+  if (!localProxyUp || !pageIsHttp || !u) return u;
+  return "http://localhost:8787/?url=" + encodeURIComponent(u);
+}
+
 // NOTE: there is deliberately NO shared "last proxy" global. An earlier
 // version kept one (`lastVia`) and the parallel source fetches overwrote it,
 // so the status pill could name the wrong proxy (e.g. "danbooru … via
@@ -42,6 +65,8 @@ function loadSettings() {
     p = legacySfw === "false" ? "mixed" : "safe";
   }
   $("#purity").value = ["safe", "mixed", "nsfw"].includes(p) ? p : "safe";
+  const dr = localStorage.getItem("wms.deviceRatio");
+  $("#device-ratio").value = ["all", "pc", "ultrawide", "phone"].includes(dr) ? dr : "all";
   const whKeyEl = $("#wh-key");
   if (whKeyEl) whKeyEl.value = localStorage.getItem("wms.whKey") || "";
   updateProxyStatus();
@@ -50,6 +75,7 @@ function saveSettings() {
   localStorage.setItem("wms.proxy", $("#proxy").value.trim());
   localStorage.setItem("wms.workerUrl", $("#worker-url").value.trim());
   localStorage.setItem("wms.purity", $("#purity").value);
+  localStorage.setItem("wms.deviceRatio", $("#device-ratio").value);
   const whKeyEl = $("#wh-key");
   if (whKeyEl) localStorage.setItem("wms.whKey", whKeyEl.value.trim());
 }
@@ -73,6 +99,7 @@ async function updateProxyStatus() {
   const banner = $("#proxy-banner");
   const bannerText = $("#proxy-banner-text");
   const up = await ProxyClient.probeLocalProxy();
+  localProxyUp = up;
   const hosted = window.location.protocol === "https:";
   if (el) {
     el.textContent = up
@@ -82,9 +109,11 @@ async function updateProxyStatus() {
   if (banner) {
     banner.hidden = up;
     if (!up && bannerText) {
+      // Plain wording: name what breaks and the exact fix. The banner is
+      // sticky (see style.css) so it can't scroll away unnoticed.
       bannerText.innerHTML = hosted
-        ? "<strong>No local proxy here — and the hosted version can't reach one.</strong> Set up the Cloudflare Worker (see <code>worker/README.md</code>) and paste its URL in Settings, or run the app locally with <code>./start.sh</code> — otherwise Wallhaven, Safebooru, Zerochan and the other proxied sources fall back to public proxies, which fail often."
-        : "<strong>Local proxy not running.</strong> Wallhaven, Safebooru, Zerochan and the other proxied sources fall back to public proxies, which fail often — some sources may come back empty. Run <code>./start.sh</code> (Linux/Mac) or <code>start.bat</code> (Windows) from the project folder, then reload this page.";
+        ? "<strong>Local proxy is OFF — and the hosted version can't reach one.</strong> Set up the Cloudflare Worker (see <code>worker/README.md</code>) and paste its URL in Settings, or run the app locally with <code>./start.sh</code> and reload — right now Zerochan fails and images may not load; the public proxies are unreliable."
+        : "<strong>Local proxy is OFF.</strong> Run <code>./start.sh</code> (Linux/Mac) or <code>start.bat</code> (Windows) from the project folder, then reload this page. Right now Zerochan fails and images may not load — the public proxies are unreliable.";
     }
   }
 }
@@ -98,12 +127,35 @@ function minRes() {
   const [w, h] = v.split("x").map(Number);
   return { w, h };
 }
-function passesMinRes(r) {
-  const m = minRes();
+function passesMinRes(r, m = minRes()) {
   // Unknown sizes (0x0 — some scraped sites don't show resolution) pass
   // through instead of being hidden by a filter that can't judge them.
   return !m || !r.width || !r.height || (r.width >= m.w && r.height >= m.h);
 }
+// Device / ratio filter ("all", "pc", "ultrawide" or "phone").
+// Bands, from the item's own width/height:
+//   pc        — landscape: width > height (any landscape, incl. 16:9, 21:9)
+//   ultrawide — width / height >= 2.0 (21:9 ≈ 2.33 and wider)
+//   phone     — portrait: height > width (9:16, 9:20, …)
+// Square (width === height) is neither landscape nor portrait, so it shows
+// only under "All ratios" — it is hidden by every specific ratio filter.
+// Size-unknown items (0x0) can't be classified at all, so a specific ratio
+// hides them too (unlike min-res, which lets them through — a ratio filter
+// that kept unknowns would show PC results full of phone art).
+function deviceRatio() {
+  const v = $("#device-ratio").value;
+  return ["all", "pc", "ultrawide", "phone"].includes(v) ? v : "all";
+}
+function passesDeviceRatio(r, mode = deviceRatio()) {
+  if (mode === "all") return true;
+  if (!r.width || !r.height) return false;
+  if (mode === "phone") return r.height > r.width;
+  if (mode === "ultrawide") return r.width / r.height >= 2.0;
+  return r.width > r.height; // pc
+}
+// Short label for the ratio empty state ("No PC landscape wallpapers…").
+const RATIO_LABELS = { pc: "PC landscape", ultrawide: "ultrawide 21:9", phone: "phone portrait" };
+
 // Returns { data, via } — `via` names the proxy that served a proxied
 // request ("" for direct fetches). Callers keep the via with their own
 // result; see the note above about why it is never a shared global.
@@ -152,8 +204,8 @@ function pickBooruFile(fileUrl, sampleUrl) {
 
 // --- Source adapters. Each returns [{ thumb, full, alts, page, width, height, source, date, score }].
 // `alts` is the ordered list of alternate URLs for the same image to try if
-// `full` fails to load (smaller versions from the same source — see
-// imgFallback). `date` is an ISO string where the API provides one (Danbooru
+// `full` fails to load (smaller versions from the same source — see the
+// image loader in app.js: loadFullImage/probeUrl). `date` is an ISO string where the API provides one (Danbooru
 // and Wallhaven via `created_at`), null otherwise. `score` is the source's
 // popularity signal where one exists (Danbooru `score`, Wallhaven
 // `favorites`), null otherwise — Safebooru's dapi `score` is null ~88% of
@@ -242,7 +294,10 @@ const SOURCES = {
     // Safebooru's API has no server-side dimension filter, so filter locally
     // — but paginate through big pages until we have enough passing results
     // instead of giving up after the first 40 newest posts.
+    // (minRes is read once here, not per item — the select can't usefully
+    // change mid-fetch, and search() re-filters with the current value.)
     const tags = booruTags(q);
+    const m = minRes();
     const out = [];
     let examined = 0;
     let hidden = 0;
@@ -272,7 +327,7 @@ const SOURCES = {
           // null — Safebooru items sort in the unscored tail in Best mode.
           score: null,
         };
-        if (passesMinRes(item)) {
+        if (passesMinRes(item, m)) {
           out.push(item);
           if (out.length >= BOORU_TARGET) break;
         } else {
@@ -425,79 +480,328 @@ function escapeHtml(s) {
 }
 
 // Short, scannable reason for a failed source (full message goes in the pill's title).
-// Order matters: an HTTP status is the most informative bit — check it before
-// the generic "proxy unreachable" mapping, or a 503 challenge page, a 429 and
-// a dead local proxy all display identically.
-function shortReason(err) {
+// Order matters: an API-key failure is the most specific; then, when the
+// local proxy is OFF, a proxied source failing is most likely the missing
+// proxy — say so plainly ("proxy off — run ./start.sh") instead of a bare
+// HTTP status that hides the fixable cause. Danbooru is direct (no proxy
+// involved), so it keeps its technical reason. An HTTP status is still
+// checked before the generic "proxy unreachable" mapping, or a 503
+// challenge page, a 429 and a dead local proxy all display identically.
+function shortReason(err, sourceName) {
   const m = String((err && err.message) || err || "");
   if (/api key/i.test(m)) return "needs API key";
+  if (!localProxyUp && sourceName && sourceName !== "danbooru") {
+    return pageIsHttp
+      ? "proxy off — run ./start.sh"
+      : "no proxy — set up the Worker in Settings";
+  }
   const http = m.match(/HTTP (\d+)/);
   if (http) return `HTTP ${http[1]}`;
   if (/NetworkError|Failed to fetch|Load failed/i.test(m)) return "proxy unreachable";
   return m.length > 48 ? m.slice(0, 48) + "…" : m;
 }
 
-// --- Image fallback chain ---
-// The card <img> calls imgFallback(this) inline via onerror. Inline matters:
-// it is registered at parse time, so it fires even if the image errors
-// before any JS listener could attach — the v3 post-render listener
-// (attached after innerHTML) could miss a fast failure entirely, leaving a
-// broken card with no fallback at all.
-// data-alts is the ordered list of alternate URLs for the same image
-// (smaller versions from the same source, built by the adapters). The URL
-// that just failed gets one delayed retry first (CDNs 503 in bursts), then
-// the chain steps through the alternates. When one loads, the card's links
-// are retargeted to it, so "Full image" opens the image that actually works
-// instead of the dead URL. When the list is exhausted the card is removed
-// from the grid entirely — no empty black boxes — and the result total in
-// the status line is updated.
-function imgFallback(img) {
-  // Strip our own retry cache-buster before comparing: after a retry the
-  // attribute holds "…?retry=1", and without this the guard below would
-  // treat it as a new URL and retry forever.
-  const cur = (img.getAttribute("src") || "").replace(/[?&]retry=1$/, "");
-  // One delayed retry of the exact URL that just failed: image CDNs 503 in
-  // bursts under bulk load (verified 2026-11-15: two AlphaCoders thumbs 503'd
-  // in one run and 200'd minutes later), and a retry 1.5 s later often lands
-  // on a good burst. Only once per URL — the second failure moves on to the
-  // alternates. The cache-buster forces a genuinely fresh request.
-  if (img.dataset.retried !== cur) {
-    img.dataset.retried = cur;
-    const busted = cur + (cur.includes("?") ? "&" : "?") + "retry=1";
-    setTimeout(() => { if (img.isConnected) img.src = busted; }, 1500);
-    return;
-  }
-  const alts = (img.dataset.alts || "").split("|").filter(Boolean);
-  let next = alts.shift();
-  // Never retry the URL that just failed (guards against duplicates).
-  while (next && next === img.getAttribute("src")) next = alts.shift();
-  img.dataset.alts = alts.join("|");
-  if (next) {
-    const card = img.closest(".card");
-    if (card) {
-      for (const a of card.querySelectorAll("a.thumb, a.full-link")) a.href = next;
-    }
-    img.src = next;
-    return;
-  }
-  const card = img.closest(".card");
-  if (card) card.remove();
-  updateResultTotal();
+// --- Image loading: thumb first, full-res on approach, never jump ---
+// Why this exists (field evidence 2026-11-15): the URLs are fine (curl
+// 200s), but the images are not. A search pulls ~150-250 MB of full-res
+// files; a single Safebooru file is 14 MB, an AlphaCoders PNG 26 MB, and
+// Zerochan full images STALL mid-download (HTTP 200, then nothing — a
+// 30 s curl timeout hit with 12 MB already received). A stalled <img>
+// never fires onerror, so the v4 fallback chain never ran and the card
+// sat black. And when a huge file finally arrived, the box resized and
+// the masonry reflowed around it.
+//
+// So: the card <img> starts on the SMALL thumbnail (tens of KB, loads in
+// <1 s) — the box is filled immediately. The full-res image is fetched
+// with a probe Image() only when the card nears the viewport
+// (IntersectionObserver, 600 px margin), so ~200 multi-MB files are never
+// all in flight at once. The probe has a 15 s timeout per attempt (a stall
+// counts as a failure), one delayed retry per URL (CDNs 503 in bursts),
+// then steps through the alternates. When a candidate loads, the visible
+// <img> swaps to it — same aspect ratio, so the card never changes height.
+//
+// The box height NEVER comes from the image: the aspect-ratio is set on
+// the <a class="thumb"> anchor (inline style from the known dimensions,
+// 4:3 for size-unknown items) and the img fills it with object-fit:
+// contain. A failed card is NEVER removed (removal is itself a jump) —
+// it becomes a fixed-height placeholder of the same reserved size, with
+// its Source page / Full image links still working.
+const imageLoadConfig = { timeoutMs: 15000, retryDelayMs: 1500 };
+
+// Probe one URL: loads it into the browser cache (no cache-buster, so the
+// later <img> swap reuses it). Calls done(true) on load, done(false) on
+// error OR on timeout (a stalled download counts as failed). One retry
+// after retryDelayMs, then gives up on this URL. Returns a cancel function:
+// calling it silently stops the probe (no done() call) — used when the card
+// is discarded mid-probe so a stalled multi-MB download doesn't run to its
+// 15 s timeout for an image that will never be shown.
+// NOTE: `finished` is per attempt, not per probe — the retry is a second
+// attempt and must be able to finish on its own. (Hoisting it to the probe
+// scope once broke the whole fallback chain: the first attempt's finish
+// marked the retry dead, so done() never fired and the card sat on its
+// thumbnail forever.) `cancelled` is the probe-wide flag instead.
+function probeUrl(url, done) {
+  let attempts = 0;
+  let cancelled = false;
+  let timer = null;
+  let retryTimer = null;
+  let probe = null;
+  const finish = (ok) => {
+    if (cancelled) return;
+    clearTimeout(timer);
+    clearTimeout(retryTimer);
+    if (probe) probe.src = ""; // abort a stalled download
+    if (ok) done(true);
+    else if (attempts < 2) retryTimer = setTimeout(attempt, imageLoadConfig.retryDelayMs);
+    else done(false);
+  };
+  const attempt = () => {
+    if (cancelled) return;
+    attempts++;
+    probe = new Image();
+    probe.referrerPolicy = "no-referrer";
+    let finished = false;
+    const finishOnce = (ok) => { if (finished) return; finished = true; finish(ok); };
+    timer = setTimeout(() => finishOnce(false), imageLoadConfig.timeoutMs);
+    probe.onload = () => finishOnce(true);
+    probe.onerror = () => finishOnce(false);
+    probe.src = url;
+  };
+  attempt();
+  return () => {
+    if (cancelled) return;
+    cancelled = true;
+    clearTimeout(timer);
+    clearTimeout(retryTimer);
+    if (probe) probe.src = "";
+  };
 }
 
-// Re-count visible cards after fallback removals, so the "N results" pill
-// doesn't lie. If every card failed, say so instead of leaving a blank grid.
-function updateResultTotal() {
-  const n = document.querySelectorAll("#results .card").length;
-  const pill = document.querySelector("#status .pill-total strong");
-  if (pill) pill.textContent = `${n} result${n === 1 ? "" : "s"}`;
-  if (n === 0) {
-    $("#results").innerHTML = `<div class="empty-state">
-        <h2>Every image failed to load</h2>
-        <p>The sources returned results, but none of the images would load from this browser — try the site links above, or reload the page.</p>
-      </div>`;
+// Retarget a card's links to the URL that actually loaded, so "Full image"
+// opens the working image instead of the dead one.
+function retargetCardLinks(img, url) {
+  const card = img.closest(".card");
+  if (!card) return;
+  for (const a of card.querySelectorAll("a.thumb, a.full-link")) a.href = url;
+}
+
+// Total failure: show a fixed-height placeholder of the SAME reserved size
+// (the anchor keeps its aspect-ratio, the img stays in the layout box but
+// hidden, so nothing moves and nothing disappears). The card's links keep
+// working; the user can still open the source page.
+function markImageFailed(img) {
+  img.dataset.state = "failed";
+  img.style.visibility = "hidden";
+  img.alt = ""; // a failed <img> would otherwise render its alt text over the badges
+  const anchor = img.closest("a.thumb");
+  if (anchor && !anchor.querySelector(".img-placeholder")) {
+    const ph = document.createElement("div");
+    ph.className = "img-placeholder";
+    ph.setAttribute("aria-hidden", "true");
+    ph.innerHTML = `<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 18l4.5-4.5 3.5 3.5 3-3L20 19"/><line x1="4" y1="4" x2="20" y2="20"/></svg><span>Image couldn't load</span>`;
+    anchor.appendChild(ph);
   }
 }
+
+// Full URLs whose probe already succeeded (in this page lifetime). A
+// re-render rebuilds every card, so without this every sort/ratio change
+// would re-probe ~200 multi-MB images. The img's own onerror is the
+// backstop if a cached verdict goes stale (see imgThumbError).
+const probedFullUrls = new Set();
+
+// Upgrade one card's visible image to full resolution (or the next working
+// alternate). Runs once per img; safe to call again (no-op).
+function loadFullImage(img) {
+  if (!img.isConnected || img.dataset.upgradeStarted) return;
+  img.dataset.upgradeStarted = "1";
+  // Candidates in order: full, then alternates (smaller versions of the
+  // same image). Deduped — e.g. WallpaperCave's thumb IS its full image.
+  const candidates = [img.dataset.full, ...(img.dataset.alts ? img.dataset.alts.split("|").filter(Boolean) : [])]
+    .filter((u, i, a) => u && a.indexOf(u) === i);
+  // Already showing the full image (WallpaperCave): nothing to upgrade.
+  if (candidates.length === 1 && img.getAttribute("src") === candidates[0]) {
+    img.dataset.state = "full";
+    return;
+  }
+  // This full URL already verified in an earlier render (e.g. a sort
+  // change rebuilt the cards): swap it in directly instead of probing
+  // again. Only the full URL counts — if an alternate loaded last time,
+  // the full is still worth one fresh probe.
+  if (probedFullUrls.has(img.dataset.full)) {
+    img.src = img.dataset.full;
+    img.style.visibility = "";
+    img.dataset.state = "full";
+    retargetCardLinks(img, img.dataset.full);
+    return;
+  }
+  let i = 0;
+  let dead = false;
+  let cancelProbe = null;
+  // Abort the in-flight probe (and stop the chain) when the card is
+  // discarded — e.g. a new search or a filter change rebuilds the grid.
+  // Without this, a stalled probe keeps downloading a multi-MB file for an
+  // image that will never be shown (up to the 15 s timeout, twice).
+  img._cancelUpgrade = () => { dead = true; if (cancelProbe) cancelProbe(); };
+  const tryNext = () => {
+    if (dead || !img.isConnected) return;
+    if (i >= candidates.length) { markImageFailed(img); return; }
+    const url = candidates[i++];
+    cancelProbe = probeUrl(url, (ok) => {
+      cancelProbe = null;
+      if (dead || !img.isConnected) return;
+      if (ok) {
+        probedFullUrls.add(url);
+        img.src = url;
+        img.style.visibility = "";
+        img.dataset.state = "full";
+        retargetCardLinks(img, url);
+      } else {
+        tryNext();
+      }
+    });
+  };
+  tryNext();
+}
+
+// The thumbnail itself failed (its host blocks this browser, or it 404s).
+// Hide the broken icon immediately (the anchor keeps the reserved box)
+// and start the upgrade — the full-size URL may load even when the thumb
+// host doesn't. If an upgrade is already running, the probe resolves it.
+function imgThumbError(img) {
+  if (img.dataset.state === "failed") return;
+  // The visible image IS the full-res one (its probe already succeeded, or
+  // the thumb is the full image — WallpaperCave) and it just errored:
+  // there is nothing left to try. Show the placeholder instead of leaving
+  // a hidden card with no explanation.
+  if (img.dataset.state === "full") { markImageFailed(img); return; }
+  // Single candidate and the thumb already IS it (WallpaperCave, no alts):
+  // the upgrade would be a no-op, so a thumb error here is already a total
+  // failure — don't hide the img and wait on a probe that returns instantly.
+  const thumbAlts = (img.dataset.alts || "").split("|").filter(Boolean);
+  if (img.getAttribute("src") === img.dataset.full && thumbAlts.length === 0) {
+    markImageFailed(img);
+    return;
+  }
+  img.style.visibility = "hidden";
+  loadFullImage(img);
+}
+
+// Upgrade only when a card nears the viewport — never all ~200 at once.
+// Falls back to loading everything immediately where IntersectionObserver
+// doesn't exist (very old browsers, some test harnesses).
+let imageObserver = null;
+function getImageObserver() {
+  if (imageObserver) return imageObserver;
+  if (typeof IntersectionObserver === "undefined") return null;
+  imageObserver = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting) {
+        imageObserver.unobserve(e.target);
+        loadFullImage(e.target);
+      }
+    }
+  }, { rootMargin: "600px" });
+  return imageObserver;
+}
+
+// --- Favorites ---
+// Saved in localStorage under `wms.favs` (this browser only — no account,
+// no server). Each entry is a snapshot of the item as rendered (thumb, full,
+// alts, page, width, height, source, date, score), so the Favorites view can
+// re-render cards without re-searching. Deduped by source page URL.
+const FAVS_KEY = "wms.favs";
+
+function loadFavs() {
+  try {
+    const raw = localStorage.getItem(FAVS_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr.filter((f) => f && typeof f.page === "string" && f.page
+      && typeof f.thumb === "string" && f.thumb
+      && typeof f.full === "string" && f.full);
+  } catch {
+    return [];
+  }
+}
+
+let favorites = loadFavs();
+
+function saveFavs() {
+  try {
+    localStorage.setItem(FAVS_KEY, JSON.stringify(favorites));
+  } catch {
+    // Storage full or blocked: favorites still work for this session.
+  }
+}
+
+function isFav(page) {
+  return favorites.some((f) => f.page === page);
+}
+
+function favSnapshot(r) {
+  return {
+    thumb: r.thumb,
+    full: r.full,
+    alts: Array.isArray(r.alts) ? [...r.alts] : [],
+    page: r.page,
+    width: r.width || 0,
+    height: r.height || 0,
+    source: r.source,
+    date: r.date || null,
+    score: typeof r.score === "number" ? r.score : null,
+  };
+}
+
+// Toggles one item's favorite state. Returns true if it is a favorite now.
+function toggleFav(item) {
+  const i = favorites.findIndex((f) => f.page === item.page);
+  const nowFav = i < 0;
+  if (nowFav) favorites.push(favSnapshot(item));
+  else favorites.splice(i, 1);
+  saveFavs();
+  updateFavsToggle();
+  return nowFav;
+}
+
+// Items currently on screen, by source page URL — the heart button's click
+// handler looks the item up here (works in search view and in Favorites view).
+const renderedByPage = new Map();
+let favsView = false;
+
+function updateFavsToggle() {
+  const btn = $("#favs-toggle");
+  if (!btn) return;
+  btn.textContent = `★ Favorites (${favorites.length})`;
+  btn.classList.toggle("active", favsView);
+  btn.setAttribute("aria-pressed", favsView ? "true" : "false");
+}
+
+function setFavsView(on) {
+  favsView = on;
+  updateFavsToggle();
+}
+
+function renderFavsView() {
+  setFavsView(true);
+  // Favorites render in the current sort order (they carry date/score, so
+  // Best/Newest/Largest all compose); unscored ones sort last in Best mode,
+  // exactly like search results.
+  const reports = favorites.length
+    ? [["Favorites", `${favorites.length} saved`, true, 0]]
+    : [];
+  renderResults(favorites, reports, "Favorites");
+}
+
+// Cards currently on screen, by source page URL — the sort-only fast path
+// in renderResults reorders these instead of rebuilding them. Also remembers
+// the proxy state and view of that render: image URLs are proxy-routed, so
+// a proxy state change (or a different view) invalidates the cached nodes.
+// Entries are checked with isConnected before use, so a stale entry left
+// behind by a skeleton/empty-state render can never resurrect a dead card.
+let cardByPage = new Map();
+let lastRenderProxyUp = false;
+let lastRenderFavsView = false;
 
 function renderResults(results, reports, q) {
   const seen = new Set();
@@ -508,6 +812,20 @@ function renderResults(results, reports, q) {
   });
   const sorted = sortResults(uniq);
 
+  // Device/ratio filter, applied after sorting, in memory — no re-search,
+  // and it composes with the min-resolution filter (already applied by
+  // search()) and with every sort order. Size-unknown items are hidden by
+  // a specific ratio (see passesDeviceRatio), and the count is shown in
+  // its own pill, following the min-res "hidden by filter" pattern.
+  // (The ratio mode is read once here, not once per item.)
+  const ratioMode = deviceRatio();
+  const visible = sorted.filter((r) => passesDeviceRatio(r, ratioMode));
+  const ratioHidden = sorted.length - visible.length;
+
+  // Rebuild the on-screen lookup the heart button's click handler uses.
+  renderedByPage.clear();
+  for (const r of visible) renderedByPage.set(r.page, r);
+
   const hiddenTotal = reports.reduce((sum, r) => sum + (r[3] || 0), 0);
 
   $("#status").innerHTML = reports.map(([name, payload, ok]) => {
@@ -515,15 +833,43 @@ function renderResults(results, reports, q) {
       return `<span class="status-pill pill-ok"><span class="pill-dot"></span><strong>${name}</strong>&nbsp;${escapeHtml(payload)}</span>`;
     }
     const full = String((payload && payload.message) || payload || "");
-    return `<span class="status-pill pill-fail" title="${escapeHtml(full)}"><span class="pill-dot"></span><strong>${name}</strong>&nbsp;${shortReason(payload)}</span>`;
-  }).join("") + (uniq.length
-    ? `<span class="status-pill pill-total"><strong>${uniq.length} result${uniq.length === 1 ? "" : "s"}</strong></span>`
+    return `<span class="status-pill pill-fail" title="${escapeHtml(full)}"><span class="pill-dot"></span><strong>${name}</strong>&nbsp;${shortReason(payload, name)}</span>`;
+  }).join("") + (visible.length
+    ? `<span class="status-pill pill-total"><strong>${visible.length} result${visible.length === 1 ? "" : "s"}</strong></span>`
+    : "") + (ratioHidden > 0
+    ? `<span class="status-pill pill-ratio">${ratioHidden} hidden by ratio filter</span>`
     : "");
 
   const box = $("#results");
-  if (!uniq.length) {
-    if (hiddenTotal > 0 && minRes()) {
-      const m = minRes();
+  if (!visible.length) {
+    // No cards on screen any more — the sort-only cache is empty too.
+    cardByPage = new Map();
+    if (favsView && !uniq.length) {
+      box.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon" aria-hidden="true" style="font-size:64px;line-height:1">♡</div>
+        <h2>No favorites yet</h2>
+        <p>Tap the ♡ on any wallpaper to save it here — favorites are kept in this browser and survive reloads.</p>
+      </div>`;
+      return;
+    }
+    // Results exist but the ratio filter hid all of them — say so and
+    // offer to show all ratios (client-side, no re-search).
+    if (uniq.length > 0) {
+      const label = RATIO_LABELS[deviceRatio()] || "this ratio";
+      box.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon" aria-hidden="true">
+          <svg viewBox="0 0 64 64" width="72" height="72" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="10" width="44" height="34" rx="6"/><circle cx="21" cy="23" r="4.5"/><path d="M10 38l11-11 9 9 7-7 11 11"/><circle cx="48" cy="46" r="9"/><line x1="54.5" y1="52.5" x2="60" y2="58"/></svg>
+        </div>
+        <h2>No ${label} wallpapers</h2>
+        <p>But <strong>${uniq.length}</strong> matching wallpaper${uniq.length === 1 ? "" : "s"} exist${uniq.length === 1 ? "s" : ""} in other ratios.</p>
+        <button type="button" class="btn-ghost" data-action="clear-ratio">Show all ratios</button>
+      </div>`;
+      return;
+    }
+    const m = minRes(); // read once: the condition below used to call it twice
+    if (hiddenTotal > 0 && m) {
       box.innerHTML = `
       <div class="empty-state">
         <div class="empty-icon" aria-hidden="true">
@@ -551,33 +897,82 @@ function renderResults(results, reports, q) {
       </div>`;
     return;
   }
-  box.innerHTML = sorted.map((r) => {
+  // Sort-only fast path: same visible set, same proxy state, same view —
+  // just reorder the existing cards instead of rebuilding ~160 of them.
+  // That keeps every image's probe/placeholder/favorite state: no thumb
+  // re-fetch, no full-res re-probe, no masonry reflow of 160 new nodes.
+  // (Card HTML is a pure function of the item + favorite state, and the
+  // click handler updates favorite buttons in place — so the stored nodes
+  // are always current. The isConnected check makes a stale cache entry
+  // left behind by a skeleton/empty-state render harmless.)
+  if (cardByPage.size === visible.length
+      && localProxyUp === lastRenderProxyUp && favsView === lastRenderFavsView
+      && visible.every((r) => { const el = cardByPage.get(r.page); return el && el.isConnected; })) {
+    for (const r of visible) box.appendChild(cardByPage.get(r.page));
+    return;
+  }
+  // Full rebuild: abort in-flight full-res probes for the cards about to
+  // be discarded — their downloads would otherwise run to completion (or
+  // the 15 s timeout, twice) for images that will never be shown.
+  box.querySelectorAll(".card img").forEach((img) => {
+    if (typeof img._cancelUpgrade === "function") img._cancelUpgrade();
+  });
+  // A re-render replaces every card: drop the old (now detached) images
+  // from the observer, or they accumulate forever — detached nodes never
+  // intersect, so they would never be unobserved. The observer stays
+  // usable for the new cards below.
+  if (imageObserver) imageObserver.disconnect();
+  box.innerHTML = visible.map((r) => {
     const res = (r.width && r.height) ? `${r.width}×${r.height}` : "size unknown";
-    // Full-resolution image as the displayed <img> (no small thumb, no crop).
-    // aspect-ratio reserves the box from the known dimensions so lazy-loaded
-    // images don't shift the collage as they arrive. Unknown sizes (0x0 —
-    // Wallpapers.com, AlphaCoders) get a 4:3 fallback ratio instead of
-    // nothing: without it a slow or failed image collapses the card to just
-    // its two buttons. referrerpolicy=no-referrer avoids Referer-based
-    // hotlink blocks on the image hosts.
+    // Thumb first: the small thumbnail loads in <1 s and fills the box
+    // immediately; the full-res image is swapped in by loadFullImage when
+    // the card nears the viewport (see the loader above). Full quality is
+    // still the end state — it just doesn't sit black while a 10-25 MB
+    // file downloads or stalls.
+    // The aspect-ratio lives on the ANCHOR, not the <img>: the box height
+    // is fixed from the known dimensions (4:3 for size-unknown items) and
+    // never changes, whatever loads or fails. The img fills it with
+    // object-fit: contain — never cropped, never distorted.
+    // referrerpolicy=no-referrer avoids Referer-based hotlink blocks.
+    // Image URLs go through the local proxy when it is up (see
+    // proxiedImageUrl) — verified 2026-11-15 to un-stall Zerochan images.
     const ratio = (r.width && r.height)
-      ? ` style="aspect-ratio:${r.width} / ${r.height}"`
-      : ` style="aspect-ratio:4 / 3"`;
-    const alts = (r.alts || []).filter((u) => u && u !== r.full);
+      ? `aspect-ratio:${r.width} / ${r.height}`
+      : `aspect-ratio:4 / 3`;
+    const thumbSrc = proxiedImageUrl(r.thumb);
+    const fullUrl = proxiedImageUrl(r.full);
+    const alts = (r.alts || []).filter((u) => u && u !== r.full).map(proxiedImageUrl);
+    // Favorite state read once per card (was three isFav() scans of the list).
+    const fav = isFav(r.page);
     return `
     <article class="card">
-      <a class="thumb" href="${r.full}" target="_blank" rel="noopener"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${r.full}" data-alts="${escapeHtml(alts.join("|"))}" onerror="imgFallback(this)"${ratio} alt="${r.source} wallpaper ${res}">
+      <a class="thumb" href="${fullUrl}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${thumbSrc}" data-full="${escapeHtml(fullUrl)}" data-alts="${escapeHtml(alts.join("|"))}" data-state="thumb" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
         <span class="badge badge-res">${res}</span>
         <span class="badge badge-src">${r.source}</span>
       </a>
       <div class="meta">
         <div class="links">
           <a href="${r.page}" target="_blank" rel="noopener">Source page ↗</a>
-          <a class="full-link" href="${r.full}" target="_blank" rel="noopener">Full image ↗</a>
+          <a class="full-link" href="${fullUrl}" target="_blank" rel="noopener">Full image ↗</a>
+          <button type="button" class="fav-btn${fav ? " fav-on" : ""}" data-action="toggle-fav" data-page="${escapeHtml(r.page)}" aria-pressed="${fav ? "true" : "false"}" aria-label="Save to favorites" title="Save to favorites">${fav ? "♥" : "♡"}</button>
         </div>
       </div>
     </article>`;
   }).join("");
+  // Start full-res upgrades for cards near the viewport (the observer
+  // fires for the rest as the user scrolls). Without IntersectionObserver,
+  // load everything immediately.
+  const observer = getImageObserver();
+  box.querySelectorAll(".card img").forEach((img) => {
+    if (observer) observer.observe(img);
+    else loadFullImage(img);
+  });
+  // Remember the rendered cards (in visible order) for the sort-only fast
+  // path above — and the proxy state / view they were rendered under.
+  const cards = box.querySelectorAll(".card");
+  cardByPage = new Map(visible.map((r, i) => [r.page, cards[i]]));
+  lastRenderProxyUp = localProxyUp;
+  lastRenderFavsView = favsView;
 }
 
 async function search(ev) {
@@ -585,26 +980,42 @@ async function search(ev) {
   saveSettings();
   const q = $("#query").value.trim();
   if (!q) return;
+  // A new search shows search results, not the Favorites view.
+  setFavsView(false);
   renderSiteLinks(q);
 
   const chosen = $$(".source:checked").map((c) => c.value);
   $("#status").innerHTML = `<span class="status-pill pill-busy"><span class="spinner"></span>Searching ${chosen.length} source${chosen.length === 1 ? "" : "s"}…</span>`;
   $("#results").innerHTML = Array.from({ length: 8 }, () =>
     `<div class="skeleton" aria-hidden="true"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>`).join("");
+  // The skeletons replace the cards — drop the sort-only cache (its entries
+  // are detached; the isConnected check in renderResults would reject them,
+  // but there is no reason to keep holding them).
+  cardByPage = new Map();
 
   const reports = [];
   const all = [];
   await Promise.all(chosen.map(async (name) => {
     try {
       const items = await SOURCES[name](q);
-      const passing = items.filter(passesMinRes);
+      // minRes read once per source, not once per item (the filter below
+      // runs over up to 100 items per source).
+      const m = minRes();
+      const passing = items.filter((r) => passesMinRes(r, m));
       all.push(...passing);
       // Adapters report how many matches the min-resolution filter hid, so
       // the UI never silently shows 0 when matches exist below the filter.
       // `via` comes from the items themselves (per-call), never a shared
       // global — parallel fetches used to overwrite each other's label.
+      // When the local proxy is down, a public-proxy via is labelled as
+      // such ("via corsfix — public proxy") so it doesn't read like the
+      // healthy local-proxy path.
       const via = items.via || "";
-      let msg = `${passing.length} found${via ? ` (via ${via})` : ""}`;
+      const PUBLIC_VIAS = ["corsfix", "allorigins", "allorigins (json)", "cors.lol"];
+      const viaLabel = via
+        ? ` (via ${via}${!localProxyUp && PUBLIC_VIAS.includes(via) ? " — public proxy" : ""})`
+        : "";
+      let msg = `${passing.length} found${viaLabel}`;
       // In Mixed mode, say what each source actually includes: Danbooru and
       // Wallhaven filter by rating/purity; Safebooru is a safe-only site;
       // the scraped sites have no purity filter at all. In Safe mode the
@@ -624,7 +1035,6 @@ async function search(ev) {
         else msg += " · no purity filter";
       }
       const hidden = items.hidden || 0;
-      const m = minRes();
       if (hidden > 0 && m) {
         msg += ` · ${hidden.toLocaleString()} below ${m.w}×${m.h}` +
           (items.hiddenScope === "checked" ? ` (of ${items.examined || 0} checked)` : "") +
@@ -648,16 +1058,71 @@ $("#worker-url").addEventListener("change", saveSettings);
 $("#purity").addEventListener("change", saveSettings);
 $("#wh-key").addEventListener("change", saveSettings);
 $("#sort").addEventListener("change", () => {
-  if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
+  if (favsView) renderFavsView();
+  else if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
+});
+$("#device-ratio").addEventListener("change", () => {
+  saveSettings();
+  if (favsView) renderFavsView();
+  else if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
+});
+// Favorites toggle: show only saved favorites (in the current sort order),
+// or go back to the last search results (or the idle state if none yet).
+const favsToggleBtn = $("#favs-toggle");
+if (favsToggleBtn) favsToggleBtn.addEventListener("click", () => {
+  if (favsView) {
+    setFavsView(false);
+    if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
+    else $("#results").innerHTML = idleResultsHtml;
+  } else {
+    renderFavsView();
+  }
 });
 // Banner action: re-probe the local proxy (e.g. after starting start.sh)
-// and hide the banner if it's up now.
+// and hide the banner if it's up now. If the proxy just came up and cards
+// are already on screen, re-render so their image URLs get the proxy route
+// (previously-verified full images swap in immediately — see
+// probedFullUrls — so this is cheap). Stays in the Favorites view if
+// that's where the user is.
 const recheckBtn = $("#proxy-recheck");
-if (recheckBtn) recheckBtn.addEventListener("click", updateProxyStatus);
-// Empty-state action: drop the min-resolution filter and search again.
+if (recheckBtn) recheckBtn.addEventListener("click", async () => {
+  const wasUp = localProxyUp;
+  await updateProxyStatus();
+  if (!wasUp && localProxyUp && lastReports.length) {
+    if (favsView) renderFavsView();
+    else renderResults(lastResults, lastReports, lastQuery);
+  }
+});
+// Heart buttons (delegated) + empty-state actions: drop the device/ratio
+// filter and re-render from memory, or drop the min-resolution filter and
+// search again.
 $("#results").addEventListener("click", (ev) => {
+  const favBtn = ev.target.closest('[data-action="toggle-fav"]');
+  if (favBtn) {
+    const item = renderedByPage.get(favBtn.dataset.page);
+    if (!item) return;
+    const nowFav = toggleFav(item);
+    if (favsView) {
+      // Unfavoriting inside the Favorites view removes the card from it.
+      renderFavsView();
+    } else {
+      favBtn.classList.toggle("fav-on", nowFav);
+      favBtn.textContent = nowFav ? "♥" : "♡";
+      favBtn.setAttribute("aria-pressed", nowFav ? "true" : "false");
+    }
+    return;
+  }
+  if (ev.target.closest('[data-action="clear-ratio"]')) {
+    $("#device-ratio").value = "all";
+    saveSettings();
+    if (favsView) renderFavsView();
+    else renderResults(lastResults, lastReports, lastQuery);
+    return;
+  }
   if (!ev.target.closest('[data-action="clear-res"]')) return;
   $("#min-res").value = "0";
   $("#search-form").requestSubmit();
 });
 loadSettings();
+const idleResultsHtml = $("#results").innerHTML;
+updateFavsToggle();

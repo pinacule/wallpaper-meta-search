@@ -54,6 +54,14 @@
       </div>
 
       <div class="toolbar-right">
+        <label class="field">Device / ratio
+          <select id="device-ratio">
+            <option value="all" selected>All ratios</option>
+            <option value="pc">PC — landscape</option>
+            <option value="ultrawide">PC — ultrawide 21:9</option>
+            <option value="phone">Phone — portrait</option>
+          </select>
+        </label>
         <label class="field">Min. resolution
           <select id="min-res">
             <option value="0">Any</option>
@@ -77,6 +85,7 @@
             <option value="nsfw">NSFW only</option>
           </select>
         </label>
+        <button type="button" id="favs-toggle" class="favs-toggle" aria-pressed="false">★ Favorites (0)</button>
       </div>
     </section>
 

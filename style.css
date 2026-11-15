@@ -480,17 +480,46 @@ code {
   overflow: hidden;
   background: #000;
   line-height: 0;
+  /* The anchor's own aspect-ratio (inline style) fixes the box height —
+     images, placeholders and failures never move it (see app.js). */
 }
 .card .thumb img {
   width: 100%;
-  height: auto;
+  height: 100%;
   display: block;
+  /* Contain, never cover: the full image is never cropped or distorted,
+     and a thumb whose ratio differs from the reserved one letterboxes on
+     black instead of shifting the card. */
+  object-fit: contain;
   transition: transform .25s ease;
 }
 .card:hover .thumb img { transform: scale(1.045); }
+/* Shown when every URL for a card failed (see markImageFailed in app.js):
+   same reserved box, no removal, no jump — the card's links keep working.
+   pointer-events:none so a click still opens the anchor's (retargeted)
+   full-image link. Badges sit above it (z-index 2). */
+.img-placeholder {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: #14161d;
+  color: var(--muted);
+  font-size: .85rem;
+  line-height: 1.4;
+  text-align: center;
+  padding: 12px;
+  pointer-events: none;
+}
+.img-placeholder svg { opacity: .6; }
 .badge {
   position: absolute;
   top: 10px;
+  z-index: 2;
   padding: 4px 9px;
   border-radius: 999px;
   font-size: .76rem;
@@ -502,6 +531,14 @@ code {
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
   box-shadow: 0 2px 8px rgba(0, 0, 0, .35);
+  /* Badges must never collide: each is capped at just under half the card
+     and truncates with an ellipsis. At a 300px column "Wallpapers.com"
+     (~120px) and "size unknown" (~106px) both fit; at a 240px column the
+     longer one truncates instead of overlapping. */
+  white-space: nowrap;
+  max-width: calc(50% - 14px);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .badge-res { left: 10px; }
 .badge-src { right: 10px; background: rgba(109, 124, 255, .8); }
@@ -521,6 +558,49 @@ code {
   transition: border-color .15s ease, background .15s ease;
 }
 .card .links a:hover { border-color: var(--accent); background: var(--accent-soft); }
+/* Heart / favorite button in the card's link row. */
+.card .links .fav-btn {
+  flex: 0 0 auto;
+  min-width: 42px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-soft);
+  color: var(--muted);
+  font: inherit;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, color .15s ease, transform .1s ease;
+}
+.card .links .fav-btn:hover { border-color: var(--accent); color: #fff; }
+.card .links .fav-btn:active { transform: scale(.92); }
+.card .links .fav-btn.fav-on {
+  color: #ff5d73;
+  border-color: rgba(255, 93, 115, .55);
+  background: rgba(255, 93, 115, .12);
+}
+/* Favorites toggle in the toolbar. */
+.favs-toggle {
+  padding: 8px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-soft);
+  color: var(--muted);
+  font: inherit;
+  font-size: .93rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.favs-toggle:hover { border-color: var(--accent); color: var(--text); }
+.favs-toggle.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: #fff;
+}
 
 /* Loading skeletons */
 .skeleton {
@@ -641,18 +721,25 @@ footer p { margin: 0; max-width: 80ch; }
   }
 }
 
-/* ---------- Local-proxy banner ---------- */
+/* ---------- Local-proxy banner ----------
+   Sticky: it stays pinned to the top of the viewport while scrolling, so
+   a missing proxy can't scroll away unnoticed (the v4 run happened with
+   the proxy off because the banner sat under the hero). */
 .proxy-banner {
+  position: sticky;
+  top: 0;
+  z-index: 50;
   display: flex;
   align-items: center;
   gap: 14px;
   margin-top: 16px;
   padding: 13px 16px;
-  background: rgba(245, 158, 11, .12);
-  border: 1px solid rgba(245, 158, 11, .55);
+  background: rgba(245, 158, 11, .16);
+  border: 1px solid rgba(245, 158, 11, .65);
   border-radius: var(--radius);
   color: #fde9c8;
   font-size: .92rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
 }
 .proxy-banner[hidden] { display: none; }
 .proxy-banner-icon {

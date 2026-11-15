@@ -45,8 +45,10 @@ chain, in order:
 1. **Local proxy** (`proxy/server.mjs`, port 8787) — only when the page is
    served over http (localhost). Started automatically by `start.sh` /
    `start.bat`. This is the reliable path: every source works through it,
-   including Zerochan and WallpaperCave. If it's not running, an amber
-   banner under the search box says so — start the proxy and reload.
+   including Zerochan and WallpaperCave — and since v5 the card IMAGES go
+   through it too when it's up (see "Results"). If it's not running, a
+   sticky amber banner pinned to the top of the page says so, in plain
+   words — start the proxy and reload.
 2. **Your own Cloudflare Worker** (`worker/`) — paste its URL in Settings.
    Free tier is 100k requests/day; see `worker/README.md` for the three
    deploy paths (one-click button, dashboard paste, `wrangler deploy`).
@@ -55,7 +57,10 @@ chain, in order:
 3. **A custom proxy URL** from Settings, if you enter one.
 4. **Public fallbacks** (corsfix, allorigins, cors.lol) — tried last. The
    status line under each search tells you which path actually worked,
-   e.g. `wallhaven: 24 found (via local proxy)`.
+   e.g. `wallhaven: 24 found (via local proxy)`. When the local proxy is
+   down, a public-proxy result is labelled as such — `(via corsfix —
+   public proxy)` — and a proxied source that fails says `proxy off —
+   run ./start.sh` instead of a bare HTTP status.
 
 ### Public-proxy reliability (tested 2026-11-15, evening)
 
@@ -94,6 +99,18 @@ per-proxy errors.
   Sites that don't show a resolution are never hidden by the filter. When
   the filter hides matches, the status line says how many (Danbooru's count
   is exact for the whole database; Safebooru's is "of N checked").
+- **Device / ratio** — All ratios (default), **PC — landscape**, **PC —
+  ultrawide 21:9**, or **Phone — portrait**. Classified from each item's own
+  width/height: landscape is width > height, ultrawide is width/height ≥
+  2.0 (21:9 ≈ 2.33 and wider — so a 3440×1440 search on a 3440×1440 screen
+  finds its own kind), portrait is height > width. Square images (width =
+  height) are neither, so they show only under All ratios. Items with an
+  unknown size can't be classified, so a specific ratio hides them — the
+  status line says how many ("N hidden by ratio filter"), and if the filter
+  hides everything the empty state offers "Show all ratios". Like the sort
+  order, it re-renders the already-fetched results instantly — no re-search
+  — and composes with the min-resolution filter and the sort. The choice is
+  remembered in the browser (localStorage `wms.deviceRatio`).
 - **Content** — three modes, default **Safe only**:
   - *Safe only*: Danbooru `rating:safe`, Wallhaven `purity=100` (sfw).
   - *Mixed (safe + suggestive, no explicit)*: Danbooru
@@ -151,12 +168,40 @@ results instantly — no re-search:
 ## Results
 
 The grid is a masonry collage: every image keeps its original aspect ratio
-(no 16:9 cropping) and is shown at full resolution, lazy-loaded, with the
-layout space reserved from its known dimensions so the page doesn't jump as
-images arrive. If a full image fails to load (hotlink protection, dead file),
-the card falls back to its smaller thumbnail instead of breaking. The page
-is fluid full-width — no fixed container — so on a wide monitor the masonry
-just adds more ~300px columns instead of leaving empty margins.
+(no 16:9 cropping) and is shown at full resolution in the end — but it
+loads thumbnail-first. The small thumbnail (tens of KB) appears in under a
+second, and the full-resolution image is swapped in only when the card
+nears the viewport, so a search never has ~200 multi-MB files in flight at
+once. The box height is fixed from the known dimensions (4:3 for
+size-unknown items) on the card itself, and the image fills it with
+`object-fit: contain` — so nothing ever jumps while images arrive, and a
+failed image becomes a same-size "couldn't load" placeholder (its Source
+page / Full image links still work) instead of disappearing or collapsing.
+If a full image stalls (see below), it times out after 15 s and falls
+through the alternates. The page is fluid full-width — no fixed container
+— so on a wide monitor the masonry just adds more ~300px columns instead
+of leaving empty margins.
+
+Images go through the local proxy when it is running (same path as the
+search fetches): the proxy sends no Referer and a plain UA, which dodges
+Referer-based hotlink blocks. Verified 2026-11-15: Zerochan full images
+that stalled mid-download direct came through the proxy in ~2.4 s. The
+proxy does NOT change the egress IP, so it can't dodge an IP-based block.
+
+## Favorites
+
+Every card has a ♡ button in its link row. Click it to save that wallpaper
+— the heart fills (♥) and the item is stored in this browser's
+localStorage under `wms.favs` (thumb, full image, source page, size,
+source, date and score — enough to re-render the card without
+re-searching). Click again to remove it.
+
+The **★ Favorites (N)** button in the toolbar shows only your saved
+favorites, in the current sort order (Best / Largest / Newest / Source
+order all work on favorites too). Click it again — or run a new search —
+to go back to normal results. Favorites survive reloads and new searches,
+and a wallpaper that shows up again in a later search still shows its
+filled heart. Everything is local-only: no account, no server, no export.
 
 ## Bugs fixed in this version
 
@@ -208,6 +253,58 @@ just adds more ~300px columns instead of leaving empty margins.
   (Wallpapers.com, AlphaCoders) now reserve a 4:3 box instead of
   collapsing to just buttons, and images send no Referer
   (`referrerpolicy="no-referrer"`) to dodge hotlink blocks.
+- Black cards persisted (v5): Wallpapers.com and Danbooru cards still
+  showed black in the user's browser even though the URLs curl as HTTP
+  200. Diagnosis (live, 2026-11-15): the URLs are fine, the DOWNLOADS are
+  the problem — a search pulls ~150–250 MB (a single Safebooru file is
+  14 MB, an AlphaCoders PNG 26 MB), and Zerochan full images STALL
+  mid-download (HTTP 200, then nothing — a 30 s curl timeout hit with
+  12 MB already received). A stalled `<img>` never fires `onerror`, so no
+  fallback chain ever ran. Fixes: thumbnail-first loading (small thumb
+  shows immediately, full-res swaps in on approach via IntersectionObserver,
+  so ~200 huge files are never all in flight); a 15 s timeout per image
+  attempt (a stall counts as failed), one delayed retry, then the
+  alternates; the box height now comes from the card's own aspect-ratio
+  (not the `<img>`), so nothing jumps when images arrive; a card whose
+  images all fail becomes a same-size placeholder instead of being
+  removed (removal was itself a jump). Images are also routed through the
+  local proxy when it is up (allowlist extended to the image CDNs:
+  `w./th.wallhaven.cc`, `safebooru.org`, `images*.alphacoders.com`,
+  `static/s3.zerochan.net`, `cdn.donmai.us`) — Zerochan images that stall
+  direct load through it in ~2.4 s. Unverified from this VM: Danbooru's
+  CDN (`cdn.donmai.us`) 403s this VM's IP, so Danbooru images couldn't be
+  tested here at all — the proxy route is the best shot, but if the user's
+  VPN IP is also blocked there, those cards will show the placeholder.
+- Badge overlap (v5): on narrow cards the "size unknown" and source
+  badges could collide — and a failed image rendered its long alt text
+  over them. Badges are now capped at just under half the card width with
+  ellipsis truncation, and a failed image hides its alt text behind the
+  placeholder.
+- Proxy errors were too easy to miss (v5): the user ran a whole session
+  with the proxy off without noticing the banner (it sat under the hero
+  and scrolled away). The banner is now sticky at the top of the page with
+  plain wording ("Local proxy is OFF. Run ./start.sh … then reload …
+  Right now Zerochan fails and images may not load"), a failing proxied
+  source's pill says "proxy off — run ./start.sh" (technical detail stays
+  in the tooltip), and public-proxy results are labelled "(via corsfix —
+  public proxy)".
+- Re-renders re-probed everything (v5 QA): every sort/ratio change rebuilt
+  all cards, so ~200 multi-MB full images were probed again and the
+  observer kept the detached nodes forever. Fixes: verified full URLs are
+  cached for the page lifetime; sort/ratio changes now just reorder the
+  existing cards (same nodes, no thumb re-fetch, no re-probe); in-flight
+  probes are cancelled when their card is discarded; the observer is
+  disconnected on full rebuilds. Also fixed: a full image erroring after a
+  successful probe left a hidden card with no placeholder; the hosted
+  (https) version's pills wrongly said "run ./start.sh" (it can never reach
+  the local proxy — they now point at the Worker); "Check again" after
+  starting the proxy now re-renders the images through it; an empty-query
+  submit no longer silently exits the Favorites view.
+- Performance (v5): the proxy now streams responses instead of buffering
+  them whole (TTFB on a 2.5 MB image 1.32 s → 0.38 s) and forwards cache
+  headers so browsers can cache proxied images; WallpaperCave's category
+  URL is guessed first (2 fetches → 1); sort changes render in ~1 ms
+  instead of ~13 ms in the test harness.
 
 ## Project layout
 

@@ -39,6 +39,28 @@ function dedupe(items) {
   });
 }
 
+// Parse a WallpaperCave category page into up to 40 items (deduped).
+function parseWallpaperCaveCategory(html) {
+  const out = [];
+  const re = /<a href="(\/w\/[^"]+)" class="wpinkw">[\s\S]*?<img src="(\/wp\/[^"]+)" width="(\d+)" height="(\d+)"/g;
+  let m;
+  while ((m = re.exec(html)) && out.length < 40) {
+    out.push({
+      thumb: absUrl("https://wallpapercave.com", m[2]),
+      full: absUrl("https://wallpapercave.com", m[2]),
+      // No alternate: the grid image IS the full image, so there is
+      // nothing else to fall back to — a failed card is removed instead.
+      alts: [],
+      page: absUrl("https://wallpapercave.com", m[1]),
+      width: parseInt(m[3], 10), height: parseInt(m[4], 10),
+      source: "WallpaperCave",
+      date: null, // category pages show no date — dateless in Newest sort
+      score: null, // no popularity number on the page — unscored in Best sort
+    });
+  }
+  return cap40(dedupe(out));
+}
+
 const EXTRA_SOURCES = {
   // wallpapers.com — /search/<query> 301-redirects to a /<slug> listing page
   // (fetch follows it). Each result: <a href="/wallpapers/<slug>.html"> with a
@@ -82,6 +104,29 @@ const EXTRA_SOURCES = {
   // category URL directly from the query: /<query-slug>-wallpapers. If the
   // guess 404s, the adapter fails honestly like before.
   async wallpapercave(q) {
+    const slug = q.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    // Fast path: guess the category URL from the query ("/code-geass-wallpapers").
+    // Most one-topic queries land here and skip the search-page fetch entirely
+    // (one request instead of two — the search page is ~400 KB through the
+    // proxy chain). Local proxy ONLY, one direct fetch, no chain walk: a
+    // wrong guess 404s in ~0.5 s and falls through to the search page, and
+    // when the proxy is down the guess is skipped entirely (a chain walk
+    // through the slow public proxies would cost more than the fetch saves).
+    // NOTE: an earlier version of this fast path used fetchHtml (full chain)
+    // — a wrong guess then walked every public proxy with 20 s timeouts,
+    // adding ~90 s before the fallback ran. Never chain-walk a guess.
+    if (slug && localProxyUp && pageIsHttp) {
+      try {
+        const res = await fetch(ProxyClient.LOCAL_PROXY + encodeURIComponent(absUrl("https://wallpapercave.com", `/${slug}-wallpapers`)));
+        if (res.ok) {
+          const items = parseWallpaperCaveCategory(await res.text());
+          if (items.length) { items.via = "local proxy"; return items; }
+        }
+        // Not ok, or no items: fall through to the search page below.
+      } catch {
+        // Local proxy fetch failed — fall through to the search page.
+      }
+    }
     let cat = null;
     try {
       const { text: searchHtml } = await fetchHtml(`https://wallpapercave.com/search?q=${encodeURIComponent(q)}`);
@@ -93,33 +138,14 @@ const EXTRA_SOURCES = {
       cat = null; // search page unreachable — fall through to the slug guess
     }
     if (!cat) {
-      const slug = q.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
       if (!slug) throw new Error("no matching category on WallpaperCave search page");
       cat = `/${slug}-wallpapers`;
     }
     const { text: html, via } = await fetchHtml(absUrl("https://wallpapercave.com", cat));
-    const out = [];
-    const re = /<a href="(\/w\/[^"]+)" class="wpinkw">[\s\S]*?<img src="(\/wp\/[^"]+)" width="(\d+)" height="(\d+)"/g;
-    let m;
-    while ((m = re.exec(html)) && out.length < 40) {
-      out.push({
-        thumb: absUrl("https://wallpapercave.com", m[2]),
-        full: absUrl("https://wallpapercave.com", m[2]),
-        // No alternate: the grid image IS the full image, so there is
-        // nothing else to fall back to — a failed card is removed instead.
-        alts: [],
-        page: absUrl("https://wallpapercave.com", m[1]),
-        width: parseInt(m[3], 10), height: parseInt(m[4], 10),
-        source: "WallpaperCave",
-        date: null, // category pages show no date — dateless in Newest sort
-        score: null, // no popularity number on the page — unscored in Best sort
-      });
-    }
-    const items = dedupe(out);
+    const items = parseWallpaperCaveCategory(html);
     if (!items.length) throw new Error("no results parsed from WallpaperCave category page");
-    const capped = cap40(items);
-    capped.via = via;
-    return capped;
+    items.via = via;
+    return items;
   },
 
   // AlphaCoders — the documented API is dead (see header), so this scrapes the
