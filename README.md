@@ -104,8 +104,8 @@ per-proxy errors.
   width/height: landscape is width > height, ultrawide is width/height ≥
   2.0 (21:9 ≈ 2.33 and wider — so a 3440×1440 search on a 3440×1440 screen
   finds its own kind), portrait is height > width. Square images (width =
-  height) are neither, so they show only under All ratios. Items with an
-  unknown size can't be classified, so a specific ratio hides them — the
+  height) are neither, so they show only under All ratios. Items with no
+  size at all can't be classified, so a specific ratio hides them — the
   status line says how many ("N hidden by ratio filter"), and if the filter
   hides everything the empty state offers "Show all ratios". Like the sort
   order, it re-renders the already-fetched results instantly — no re-search
@@ -172,11 +172,15 @@ The grid is a masonry collage: every image keeps its original aspect ratio
 loads thumbnail-first. The small thumbnail (tens of KB) appears in under a
 second, and the full-resolution image is swapped in only when the card
 nears the viewport, so a search never has ~200 multi-MB files in flight at
-once. The box height is fixed from the known dimensions (4:3 for
-size-unknown items) on the card itself, and the image fills it with
-`object-fit: contain` — so nothing ever jumps while images arrive, and a
-failed image becomes a same-size "couldn't load" placeholder (its Source
-page / Full image links still work) instead of disappearing or collapsing.
+once. The box height is fixed from the known dimensions — or from the
+listing's aspect ratio when the pixels are unknown — on the card itself,
+and the image fills it with `object-fit: contain` — so nothing ever jumps
+while images arrive, and a failed image becomes a same-size "couldn't load"
+placeholder (its Source page / Full image links still work) instead of
+disappearing or collapsing. The one exception: an item whose listing stated
+neither dimensions nor ratio gets its box corrected once, from the loaded
+image's own size — and when the full image loads, its real dimensions
+replace the "size unknown" badge.
 If a full image stalls (see below), it times out after 15 s and falls
 through the alternates. Clicking an image opens the full image in a new
 tab — the image itself is the link, and that never changes. The Source /
@@ -323,6 +327,32 @@ filled heart. Everything is local-only: no account, no server, no export.
   image that fades in on hover (or keyboard focus) and is hidden otherwise
   — and hidden means unclickable, so it can never steal the click that
   opens the full image. Touch devices keep the row always visible.
+- "Size unknown" on AlphaCoders (v5.2, field report 2026-11-15): the
+  listing DID publish the real dimensions all along — each item embeds
+  schema.org microdata (<meta itemprop="width" content="1920">, height,
+  fileFormat) — the adapter just never read it. It does now: verified
+  against a saved live search page, 29/29 items parse with real
+  dimensions, and the full URL uses the true file extension (7 of them
+  are .png — previously guessed as .jpg with a .png fallback).
+- "Size unknown" on Wallpapers.com (v5.2): that listing genuinely
+  publishes no full resolution — but each result's <img> carries the
+  thumbnail's width/height, which preserves the full image's aspect
+  ratio, so the card's box is right from the start (ratio-only, the
+  badge honestly stays "size unknown" until the full image loads and
+  reports its real pixels — see imgLoaded). The ratio also feeds the
+  Device/ratio filter now, so Wallpapers.com portrait art shows under
+  "Phone — portrait" instead of being hidden. Thumbs come from the
+  900w /images/high/ variant instead of the 300w thumbnail.
+- Images looking small although the full is high-res (v5.2): two
+  causes. (1) The 4:3 reserve box letterboxed portrait art — a 1080x1920
+  image sat in the middle of a wide box with black bars, looking small.
+  Fixed by the true ratio above (AlphaCoders dims, Wallpapers.com ratio,
+  plus imgLoaded correcting the box from the loaded image as a backstop).
+  (2) When the full image stalls, the card falls back to a much smaller
+  alternate (e.g. a 177x250 Safebooru preview) — that is the best version
+  that actually loaded, not the best that exists; the Full image link
+  still opens the real full file. Wallpapers.com thumbs are now 900w
+  instead of 300w, so the pre-upgrade image is crisper too.
 
 ## Project layout
 

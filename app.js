@@ -139,19 +139,22 @@ function passesMinRes(r, m = minRes()) {
 //   phone     — portrait: height > width (9:16, 9:20, …)
 // Square (width === height) is neither landscape nor portrait, so it shows
 // only under "All ratios" — it is hidden by every specific ratio filter.
-// Size-unknown items (0x0) can't be classified at all, so a specific ratio
-// hides them too (unlike min-res, which lets them through — a ratio filter
-// that kept unknowns would show PC results full of phone art).
+// Items with no pixel dimensions but a known aspect ratio (Wallpapers.com:
+// ratioW/ratioH from the listing thumbnail) CAN be classified — the ratio
+// is all the filter needs. Truly unknown items (no dims, no ratio) still
+// hide under a specific ratio (unlike min-res, which lets them through —
+// a ratio filter that kept unknowns would show PC results full of phone art).
 function deviceRatio() {
   const v = $("#device-ratio").value;
   return ["all", "pc", "ultrawide", "phone"].includes(v) ? v : "all";
 }
 function passesDeviceRatio(r, mode = deviceRatio()) {
   if (mode === "all") return true;
-  if (!r.width || !r.height) return false;
-  if (mode === "phone") return r.height > r.width;
-  if (mode === "ultrawide") return r.width / r.height >= 2.0;
-  return r.width > r.height; // pc
+  const w = r.width || r.ratioW || 0, h = r.height || r.ratioH || 0;
+  if (!w || !h) return false;
+  if (mode === "phone") return h > w;
+  if (mode === "ultrawide") return w / h >= 2.0;
+  return w > h; // pc
 }
 // Short label for the ratio empty state ("No PC landscape wallpapers…").
 const RATIO_LABELS = { pc: "PC landscape", ultrawide: "ultrawide 21:9", phone: "phone portrait" };
@@ -595,6 +598,27 @@ function markImageFailed(img) {
   }
 }
 
+// A card image finished loading, so the browser knows its true size.
+// For items whose listing never stated dimensions, use it: the ratio
+// (every thumb here is ratio-preserving) fixes the box at once, and when
+// the image showing is the FULL one, its pixels ARE the real dimensions,
+// so the badge stops saying "size unknown". Idempotent — fires again on
+// every src swap (thumb -> full), and the badge check makes the
+// dimension fill-in a one-time thing. Items with parsed dimensions are
+// unaffected (their ratio already matches; the badge is already set).
+function imgLoaded(img) {
+  const w = img.naturalWidth, h = img.naturalHeight;
+  if (!w || !h) return;
+  const anchor = img.closest("a.thumb");
+  if (anchor) anchor.style.aspectRatio = `${w} / ${h}`;
+  const card = img.closest(".card");
+  const badge = card && card.querySelector(".badge-res");
+  if (badge && badge.textContent === "size unknown"
+      && img.getAttribute("src") === img.dataset.full) {
+    badge.textContent = `${w}×${h}`;
+  }
+}
+
 // Full URLs whose probe already succeeded (in this page lifetime). A
 // re-render rebuilds every card, so without this every sort/ratio change
 // would re-probe ~200 multi-MB images. The img's own onerror is the
@@ -920,15 +944,23 @@ function renderResults(results, reports, q) {
     // still the end state — it just doesn't sit black while a 10-25 MB
     // file downloads or stalls.
     // The aspect-ratio lives on the ANCHOR, not the <img>: the box height
-    // is fixed from the known dimensions (4:3 for size-unknown items) and
-    // never changes, whatever loads or fails. The img fills it with
-    // object-fit: contain — never cropped, never distorted.
+    // is fixed from the known dimensions — or from the listing's aspect
+    // ratio when pixels are unknown (ratioW/ratioH) — and only falls back
+    // to 4:3 when even the ratio is unknown. Whatever loads then fills the
+    // box with object-fit: contain — never cropped, never distorted.
+    // A loaded image corrects the box itself (see imgLoaded): the thumb's
+    // natural size fixes the ratio at once, and a loaded full image fills
+    // in the badge's real dimensions. That one early correction per
+    // previously-unknown card is the price of a correct box; known items
+    // never move.
     // referrerpolicy=no-referrer avoids Referer-based hotlink blocks.
     // Image URLs go through the local proxy when it is up (see
     // proxiedImageUrl) — verified 2026-11-15 to un-stall Zerochan images.
     const ratio = (r.width && r.height)
       ? `aspect-ratio:${r.width} / ${r.height}`
-      : `aspect-ratio:4 / 3`;
+      : (r.ratioW && r.ratioH)
+        ? `aspect-ratio:${r.ratioW} / ${r.ratioH}`
+        : `aspect-ratio:4 / 3`;
     const thumbSrc = proxiedImageUrl(r.thumb);
     const fullUrl = proxiedImageUrl(r.full);
     const alts = (r.alts || []).filter((u) => u && u !== r.full).map(proxiedImageUrl);
@@ -936,7 +968,7 @@ function renderResults(results, reports, q) {
     const fav = isFav(r.page);
     return `
     <article class="card">
-      <a class="thumb" href="${fullUrl}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${thumbSrc}" data-full="${escapeHtml(fullUrl)}" data-alts="${escapeHtml(alts.join("|"))}" data-state="thumb" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
+      <a class="thumb" href="${fullUrl}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${thumbSrc}" data-full="${escapeHtml(fullUrl)}" data-alts="${escapeHtml(alts.join("|"))}" data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
         <span class="badge badge-res">${res}</span>
         <span class="badge badge-src">${r.source}</span>
       </a>

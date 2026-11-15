@@ -65,7 +65,14 @@ const EXTRA_SOURCES = {
   // wallpapers.com — /search/<query> 301-redirects to a /<slug> listing page
   // (fetch follows it). Each result: <a href="/wallpapers/<slug>.html"> with a
   // thumbnail at /images/thumbnail/<slug>.jpg; the full image is the same slug
-  // under /images/hd/ (verified: both return HTTP 200). No resolution shown.
+  // under /images/hd/ (verified: both return HTTP 200). The listing does NOT
+  // publish the full resolution anywhere — but each result's <img> carries
+  // width/height of the thumbnail, which preserves the full image's aspect
+  // ratio, so the card's box is right from the start (ratioW/ratioH, not
+  // width/height — the badge honestly stays "size unknown" until the full
+  // image loads and reports its real pixels, see imgLoaded in app.js).
+  // The listing also offers a 900w /images/high/ variant: that is the thumb
+  // now, instead of the 300w thumbnail — visibly crisper in the grid.
   async wallpapersdotcom(q) {
     const { text: html, via } = await fetchHtml(`https://wallpapers.com/search/${encodeURIComponent(q)}`);
     const out = [];
@@ -74,14 +81,20 @@ const EXTRA_SOURCES = {
     while ((m = re.exec(html)) && out.length < 40) {
       const inner = /(?:data-src|src)="(https:\/\/wallpapers\.com\/images\/thumbnail\/[^"]+)"/.exec(m[2]);
       if (!inner) continue;
-      const thumb = inner[1];
+      const thumb300 = inner[1];
+      const high = /https:\/\/wallpapers\.com\/images\/high\/[^" ]+\.jpg/.exec(m[2]);
+      const thumb = high ? high[0] : thumb300;
+      const dims = /width="(\d+)"\s*height="(\d+)"/.exec(m[2]);
       out.push({
         thumb,
-        full: thumb.replace("/images/thumbnail/", "/images/hd/"),
+        full: thumb300.replace("/images/thumbnail/", "/images/hd/"),
         // Fallback: the thumbnail itself, if the /images/hd/ file won't load.
         alts: [thumb],
         page: absUrl("https://wallpapers.com", m[1]),
-        width: 0, height: 0, source: "Wallpapers.com",
+        width: 0, height: 0,
+        ratioW: dims ? parseInt(dims[1], 10) : 0,
+        ratioH: dims ? parseInt(dims[2], 10) : 0,
+        source: "Wallpapers.com",
         date: null, // search pages show no date — dateless in Newest sort
         score: null, // no popularity number on the page — unscored in Best sort
       });
@@ -156,8 +169,16 @@ const EXTRA_SOURCES = {
   // does NOT include thumb-1920 links — the full image is the same URL with
   // the "thumb-<size>-" prefix stripped (verified: HTTP 200, e.g. 3.7 MB
   // original for id 775441). No API key needed any more.
+  // The listing DOES carry the real dimensions: each item embeds schema.org
+  // microdata (<meta itemprop="width" content="1920">, height, fileFormat)
+  // right after its big.php link — so width/height are real here, and the
+  // full URL uses the true file extension instead of guessing .jpg/.png.
   async alphacoders(q) {
     const { text: html, via } = await fetchHtml(`https://wall.alphacoders.com/search.php?search=${encodeURIComponent(q)}`);
+    const dims = new Map(); // id -> { w, h, fmt }
+    for (const dm of html.matchAll(/big\.php\?i=(\d+)"[\s\S]{0,900}?<meta itemprop="width" content="(\d+)">\s*<meta itemprop="height" content="(\d+)">(?:\s*<meta itemprop="fileFormat" content="(\w+)">)?/g)) {
+      dims.set(dm[1], { w: +dm[2], h: +dm[3], fmt: (dm[4] || "jpg").toLowerCase() });
+    }
     const perId = new Map(); // id -> [thumb urls]
     for (const m of html.matchAll(/https:\/\/images\d*\.alphacoders\.com\/\d+\/thumb-(?:350|440|1920)-(\d+)\.(jpg|png|webp)/g)) {
       const arr = perId.get(m[1]) || [];
@@ -173,19 +194,26 @@ const EXTRA_SOURCES = {
       const base = urls.find((u) => /\.(jpg|png)$/.test(u)) || urls[0];
       if (!base) continue;
       const thumb = urls.find((u) => /thumb-350-/.test(u) && /\.(jpg|png)$/.test(u)) || base;
-      const full = base.replace(/\/thumb-(?:350|440|1920)-/, "/").replace(/\.webp$/, ".jpg");
-      // Fallbacks for the same image, full-res first: if the thumb was .webp
-      // the original was guessed as .jpg, but it may actually be .png — try
-      // that before dropping to the small thumb.
+      const d = dims.get(id);
+      let full;
       const alts = [];
-      if (/\.webp$/.test(base)) alts.push(full.replace(/\.jpg$/, ".png"));
+      if (d) {
+        // True extension known — no guessing, no .png alternate needed.
+        full = base.replace(/\/thumb-(?:350|440|1920)-/, "/").replace(/\.\w+$/, `.${d.fmt}`);
+      } else {
+        full = base.replace(/\/thumb-(?:350|440|1920)-/, "/").replace(/\.webp$/, ".jpg");
+        // Fallback for the same image, full-res first: if the thumb was .webp
+        // the original was guessed as .jpg, but it may actually be .png — try
+        // that before dropping to the small thumb.
+        if (/\.webp$/.test(base)) alts.push(full.replace(/\.jpg$/, ".png"));
+      }
       if (thumb !== full) alts.push(thumb);
       out.push({
         thumb,
         full,
         alts,
         page: `https://wall.alphacoders.com/big.php?i=${id}`,
-        width: 0, height: 0, source: "AlphaCoders",
+        width: d ? d.w : 0, height: d ? d.h : 0, source: "AlphaCoders",
         date: null, // search pages show no date — dateless in Newest sort
         score: null, // no popularity number on the page — unscored in Best sort
       });
