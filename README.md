@@ -30,8 +30,8 @@ Then open `http://localhost:8090/`. Or just open `index.html` in a browser
 | Safebooru | API via proxy chain, inline | Works |
 | AlphaCoders | HTML search page via proxy chain, inline | Works, no API key — the documented API (`api2.0/get.php`) is dead (nginx 404 on every variant) |
 | Wallpapers.com | HTML search page via proxy chain, inline | Works — 40 items per search (no resolution shown) |
-| WallpaperCave | HTML search page via proxy chain, inline | Works — 40 items, real resolutions |
-| Zerochan | HTML search page via proxy chain, inline | Works — 38 items, real resolutions (goes through the proxy to dodge its browser check) |
+| WallpaperCave | HTML search page via proxy chain, inline | Works via local proxy (40 items); via public proxies it flips between working and failing in bursts — see below |
+| Zerochan | HTML search page via proxy chain, inline | Works via local proxy (38 items); via public proxies Zerochan's bot-block ("Crawlers are not permitted") 503s corsfix in bursts — see below |
 | WallpaperAccess | Link only | Cloudflare 403s every fetch, direct and via proxy |
 | Gelbooru | Link only | Its API returns 401 anonymously — needs an account API key |
 | Google Images | Link only | No free search API |
@@ -44,17 +44,48 @@ chain, in order:
 
 1. **Local proxy** (`proxy/server.mjs`, port 8787) — only when the page is
    served over http (localhost). Started automatically by `start.sh` /
-   `start.bat`. This is the reliable path.
+   `start.bat`. This is the reliable path: every source works through it,
+   including Zerochan and WallpaperCave. If it's not running, an amber
+   banner under the search box says so — start the proxy and reload.
 2. **Your own Cloudflare Worker** (`worker/`) — paste its URL in Settings.
    Free tier is 100k requests/day; see `worker/README.md` for the three
    deploy paths (one-click button, dashboard paste, `wrangler deploy`).
    This is the reliable path when using GitHub Pages, where the local proxy
    can't be reached (an https page can't fetch `http://localhost`).
 3. **A custom proxy URL** from Settings, if you enter one.
-4. **Public fallbacks** (corsfix, allorigins, cors.lol) — tried last. Tested
-   2026-11-15: most were down, rate-limited, or failing for these hosts, so
-   don't rely on them. The status line under each search tells you which
-   path actually worked, e.g. `wallhaven: 24 found (via local proxy)`.
+4. **Public fallbacks** (corsfix, allorigins, cors.lol) — tried last. The
+   status line under each search tells you which path actually worked,
+   e.g. `wallhaven: 24 found (via local proxy)`.
+
+### Public-proxy reliability (tested 2026-11-15, evening)
+
+The public proxies are flaky *per host*, and they flip between working and
+failing over minutes — a source that failed one minute can work the next:
+
+- **corsfix** — reliable for Wallhaven, Safebooru, Wallpapers.com and
+  AlphaCoders (5/5 rounds). But it 503s WallpaperCave's pages and Zerochan
+  in bursts: Zerochan's 503 is its own bot-block ("Crawlers are not
+  permitted") aimed at corsfix's datacenter IP; WallpaperCave's is a plain
+  503 with an empty body. The chain retries each proxy once (1.5 s later),
+  which often lands on a good burst.
+- **allorigins** — slow (7–20 s per request) and mostly 502/522 for these
+  hosts. It does serve WallpaperCave *category* pages (200 in ~7 s), so
+  the WallpaperCave adapter falls back to guessing the category URL
+  (`/<query-slug>-wallpapers`) when the search page can't be fetched.
+  HTML fetches allow 20 s for this reason; JSON fetches stay at 8 s.
+- **cors.lol** — 429 rate-limited on every host right now; kept last in the
+  chain in case it recovers.
+- **Zerochan via public proxies is currently not reliably possible** — every
+  public proxy gets its bot-block in bursts. Use the local proxy or the
+  Worker for Zerochan (the Worker is untested against the block — its
+  Cloudflare egress IPs may be blocked too).
+
+Why a failed source shows "proxy unreachable" instead of the real error:
+when a public proxy returns an error status, the browser only reports it as
+"Failed to fetch" if that error response lacks CORS headers (allorigins'
+error pages do). The chain error then contains "Failed to fetch" and the UI
+shortens it to "proxy unreachable". Hover the red pill for the full
+per-proxy errors.
 
 ## Filters
 
@@ -63,8 +94,50 @@ chain, in order:
   Sites that don't show a resolution are never hidden by the filter. When
   the filter hides matches, the status line says how many (Danbooru's count
   is exact for the whole database; Safebooru's is "of N checked").
-- **Safe / SFW only** — Wallhaven `purity=100`, Danbooru `rating:safe`.
+- **Content** — three modes, default **Safe only**:
+  - *Safe only*: Danbooru `rating:safe`, Wallhaven `purity=100` (sfw).
+  - *Mixed (safe + suggestive, no explicit)*: Danbooru
+    `rating:safe,questionable`, Wallhaven `purity=110` (sfw + sketchy).
+    Safebooru is a safe-only site, so it returns its normal results in both
+    modes. Zerochan, AlphaCoders, Wallpapers.com and WallpaperCave have no
+    purity filter — in Mixed mode they return whatever their public search
+    page shows (verified 2026-11-15: "code geass swimsuit" returned 58
+    Zerochan items, "code geass bikini" returned 14 AlphaCoders and 30
+    Wallpapers.com items).
+  - *NSFW only*: Danbooru `rating:explicit`, Wallhaven `purity=001`.
+    Verified counts for "code geass" (2026-11-15):
+    | Source | NSFW mode, anonymous | Evidence |
+    |---|---|---|
+    | Danbooru | ✅ Works, no key — 1,788 explicit posts, 209 at 1920×1080+ | counts endpoint + posts call, all returned posts rated `e` |
+    | Wallhaven | ❌ Needs an API key — anonymous `purity=001` returns 0 results for every query (even "anime" and an empty query); the docs say "NSFW wallpapers are blocked to guests". Paste a key in Settings (free, from your Wallhaven account → API, stored only in this browser) and NSFW search works; without one the status pill says "needs API key" instead of showing 0. **The key path is untested** — no key was available when this was built. |
+    | Safebooru | Safe-only site — returns nothing in NSFW mode (all 100 "code geass" posts rated `general`); the pill says "no NSFW here" |
+    | Zerochan, AlphaCoders, Wallpapers.com, WallpaperCave | No purity filter — NSFW mode changes nothing; they return whatever their public search page shows |
+  - Verified counts for "code geass": Danbooru safe 8,176 vs mixed 10,656
+    vs explicit 1,788 posts; Wallhaven purity 100: 375 vs 110: 454 results
+    (001 anonymous: 0).
 - **Booru queries** — comma separates tags: `code geass, lelouch`.
+
+## Sorting
+
+The Order dropdown next to Min. resolution re-sorts the already-fetched
+results instantly — no re-search:
+
+- **Largest first** (default) — pixel area, largest first.
+- **Newest first** — Danbooru and Wallhaven items carry their upload date;
+  newest dated items first, then items with no date (Safebooru's API returns
+  no upload date, and the scraped sources — Wallpapers.com, WallpaperCave,
+  AlphaCoders, Zerochan — show no date on their search pages, so those
+  always land at the end here, in the order they arrived).
+- **Source order (most relevant)** — the order the sources returned them,
+  i.e. each source's own relevance order, as fetched.
+
+## Results
+
+The grid is a masonry collage: every image keeps its original aspect ratio
+(no 16:9 cropping) and is shown at full resolution, lazy-loaded, with the
+layout space reserved from its known dimensions so the page doesn't jump as
+images arrive. If a full image fails to load (hotlink protection, dead file),
+the card falls back to its smaller thumbnail instead of breaking.
 
 ## Bugs fixed in this version
 
@@ -79,6 +152,21 @@ chain, in order:
   the result. Boorus now paginate (up to 4×100) until 40 passing results.
 - No fetch timeout: a hung proxy hung the UI on "Searching…" forever. The
   proxy chain now times out each attempt after 8 s.
+- Public-proxy failures (v3): the three HTML scrapers only ever worked
+  through the local proxy; via public proxies they failed in bursts
+  (corsfix 503s WallpaperCave and Zerochan's bot-block; allorigins is slow
+  and mostly 502/522). Fixes: each proxy candidate is retried once after
+  1.5 s, HTML fetches get a 20 s timeout, the WallpaperCave adapter falls
+  back to guessing the category URL directly when the search page can't be
+  fetched, and a banner under the search box now says plainly when the
+  local proxy isn't running (it used to hide inside collapsed Settings).
+- The "(via X)" status label could name the wrong proxy: the last proxy
+  used was kept in a shared global while the sources run in parallel, so
+  e.g. Danbooru (direct, no proxy) could show "(via corsfix)". Each fetch
+  now returns its own `via`, carried with that source's results.
+- Failure pills hid the real cause: any "Failed to fetch" was shortened to
+  "proxy unreachable", so a 503, a 429 and a dead local proxy all looked
+  identical. The pill now shows the HTTP status when the chain knows one.
 
 ## Project layout
 

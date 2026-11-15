@@ -441,15 +441,19 @@ code {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ---------- Results grid ---------- */
+/* ---------- Results collage (masonry) ----------
+   CSS multi-column masonry: every image keeps its ORIGINAL aspect ratio
+   (no fixed aspect-ratio, no object-fit cropping anywhere on results).
+   Cards never split across columns (break-inside: avoid). */
 .results {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 20px;
+  columns: 300px;
+  column-gap: 20px;
   margin-top: 16px;
 }
 .results:empty { display: none; }
 .card {
+  break-inside: avoid;
+  margin-bottom: 20px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -470,8 +474,7 @@ code {
 }
 .card .thumb img {
   width: 100%;
-  aspect-ratio: 16 / 9;
-  object-fit: cover;
+  height: auto;
   display: block;
   transition: transform .25s ease;
 }
@@ -512,6 +515,8 @@ code {
 
 /* Loading skeletons */
 .skeleton {
+  break-inside: avoid;
+  margin-bottom: 20px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -519,11 +524,15 @@ code {
   padding-bottom: 12px;
 }
 .skeleton-thumb {
-  aspect-ratio: 16 / 9;
+  /* Varied heights so the loading state already reads as a collage. */
+  height: 240px;
   background: linear-gradient(100deg, #1a1f2c 40%, #232839 50%, #1a1f2c 60%);
   background-size: 200% 100%;
   animation: shimmer 1.3s linear infinite;
 }
+.skeleton:nth-child(3n) .skeleton-thumb { height: 330px; }
+.skeleton:nth-child(3n+1) .skeleton-thumb { height: 180px; }
+.skeleton:nth-child(4n) .skeleton-thumb { height: 280px; }
 .skeleton-line {
   height: 12px;
   margin: 12px 12px 0;
@@ -540,7 +549,7 @@ code {
 
 /* Empty states */
 .empty-state {
-  grid-column: 1 / -1;
+  column-span: all;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -599,11 +608,13 @@ footer p { margin: 0; max-width: 80ch; }
 
 /* ---------- Responsive ---------- */
 @media (max-width: 900px) {
-  .results { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+  .results { columns: 240px; column-gap: 16px; }
+  .card, .skeleton { margin-bottom: 16px; }
   .toolbar-right { margin-left: 0; }
 }
 @media (max-width: 600px) {
-  .results { grid-template-columns: 1fr; }
+  .results { columns: 2; column-gap: 12px; }
+  .card, .skeleton { margin-bottom: 12px; }
   .chip { padding: 7px 11px; font-size: .88rem; }
 }
 
@@ -615,3 +626,32 @@ footer p { margin: 0; max-width: 80ch; }
     transition-duration: .01ms !important;
   }
 }
+
+/* ---------- Local-proxy banner ---------- */
+.proxy-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 13px 16px;
+  background: rgba(245, 158, 11, .12);
+  border: 1px solid rgba(245, 158, 11, .55);
+  border-radius: var(--radius);
+  color: #fde9c8;
+  font-size: .92rem;
+}
+.proxy-banner[hidden] { display: none; }
+.proxy-banner-icon {
+  flex: 0 0 auto;
+  font-size: 1.3rem;
+  line-height: 1;
+  color: #fbbf24;
+}
+.proxy-banner p { margin: 0; flex: 1 1 auto; }
+.proxy-banner code {
+  background: rgba(0, 0, 0, .35);
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-size: .88em;
+}
+.proxy-banner .btn-ghost { flex: 0 0 auto; white-space: nowrap; }

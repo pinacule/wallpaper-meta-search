@@ -35,6 +35,12 @@
       <p class="hero-sub">Results come from the sites that let a browser ask them directly, plus a CORS proxy for the ones that don&rsquo;t. Nothing is cached or re-hosted.</p>
     </section>
 
+    <div id="proxy-banner" class="proxy-banner" role="alert" hidden>
+      <span class="proxy-banner-icon" aria-hidden="true">⚠</span>
+      <p id="proxy-banner-text"><strong>Local proxy not running.</strong> Wallhaven, Safebooru, Zerochan and the other proxied sources fall back to public proxies, which fail often — some sources may come back empty. Run <code>./start.sh</code> (Linux/Mac) or <code>start.bat</code> (Windows) from the project folder, then reload this page.</p>
+      <button type="button" id="proxy-recheck" class="btn-ghost">Check again</button>
+    </div>
+
     <section class="toolbar" aria-label="Search options">
       <div class="chip-group" role="group" aria-label="Sources with inline results">
         <span class="group-label">Sources</span>
@@ -56,7 +62,20 @@
             <option value="3440x1440">3440&times;1440+</option>
           </select>
         </label>
-        <label class="switch"><input type="checkbox" id="sfw" checked><span class="track" aria-hidden="true"><span class="knob"></span></span><span class="switch-text">Safe / SFW only</span></label>
+        <label class="field">Order
+          <select id="sort">
+            <option value="largest" selected>Largest first</option>
+            <option value="newest">Newest first</option>
+            <option value="source">Source order (most relevant)</option>
+          </select>
+        </label>
+        <label class="field">Content
+          <select id="purity">
+            <option value="safe" selected>Safe only</option>
+            <option value="mixed">Mixed — safe + suggestive</option>
+            <option value="nsfw">NSFW only</option>
+          </select>
+        </label>
       </div>
     </section>
 
@@ -70,6 +89,9 @@
         </label>
         <label class="settings-field">Custom CORS proxy <span class="hint">(optional — prefix, the target URL is appended URL-encoded; tried after the Worker)</span>
           <input id="proxy" type="url" placeholder="https://api.allorigins.win/raw?url=">
+        </label>
+        <label class="settings-field">Wallhaven API key <span class="hint">(optional — only needed for NSFW mode; free, from your Wallhaven account &rarr; API; stored only in this browser)</span>
+          <input id="wh-key" type="text" autocomplete="off">
         </label>
       </div>
     </details>

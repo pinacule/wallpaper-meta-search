@@ -18,11 +18,13 @@
 // key needed any more.
 "use strict";
 
+// Returns { text, via } — `via` names the proxy that served the page
+// (see app.js: it is per-call, never a shared global, so parallel source
+// fetches can't overwrite each other's label).
 async function fetchHtml(url) {
   const { text, via } = await ProxyClient.fetchText(url, proxySettings());
-  lastVia = via;
   if (text.length < 500) throw new Error(`empty response from ${new URL(url).hostname}`);
-  return text;
+  return { text, via };
 }
 
 const absUrl = (base, rel) => new URL(rel, base).href;
@@ -43,7 +45,7 @@ const EXTRA_SOURCES = {
   // thumbnail at /images/thumbnail/<slug>.jpg; the full image is the same slug
   // under /images/hd/ (verified: both return HTTP 200). No resolution shown.
   async wallpapersdotcom(q) {
-    const html = await fetchHtml(`https://wallpapers.com/search/${encodeURIComponent(q)}`);
+    const { text: html, via } = await fetchHtml(`https://wallpapers.com/search/${encodeURIComponent(q)}`);
     const out = [];
     const re = /<a[^>]+href="(\/wallpapers\/[^"]+\.html)"[^>]*>([\s\S]*?)<\/a>/g;
     let m;
@@ -56,11 +58,14 @@ const EXTRA_SOURCES = {
         full: thumb.replace("/images/thumbnail/", "/images/hd/"),
         page: absUrl("https://wallpapers.com", m[1]),
         width: 0, height: 0, source: "Wallpapers.com",
+        date: null, // search pages show no date — dateless in Newest sort
       });
     }
     const items = dedupe(out);
     if (!items.length) throw new Error("no results parsed from Wallpapers.com");
-    return cap40(items);
+    const capped = cap40(items);
+    capped.via = via;
+    return capped;
   },
 
   // WallpaperCave — /search?q= is a category hub, not wallpapers. The adapter
@@ -68,14 +73,28 @@ const EXTRA_SOURCES = {
   // (e.g. /code-geass-wallpapers), then parses its items: each has
   // <a href="/w/<id>" class="wpinkw"><img src="/wp/<id>.jpg"
   // width="<w>" height="<h>" — the img IS the full image, with real resolution.
+  // Fallback: corsfix 503s the search page in bursts, and allorigins 522s it
+  // — but allorigins DOES serve category pages (200, ~7s, verified 2026-11-15).
+  // So if the search page can't be fetched (or lists no category), guess the
+  // category URL directly from the query: /<query-slug>-wallpapers. If the
+  // guess 404s, the adapter fails honestly like before.
   async wallpapercave(q) {
-    const searchHtml = await fetchHtml(`https://wallpapercave.com/search?q=${encodeURIComponent(q)}`);
-    const words = q.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-    const cats = [...searchHtml.matchAll(/<a[^>]+href="(\/[a-z0-9-]+-wallpapers)"/g)]
-      .map((m) => m[1]);
-    const cat = cats.find((c) => words.some((w) => c.includes(w))) || cats[0];
-    if (!cat) throw new Error("no matching category on WallpaperCave search page");
-    const html = await fetchHtml(absUrl("https://wallpapercave.com", cat));
+    let cat = null;
+    try {
+      const { text: searchHtml } = await fetchHtml(`https://wallpapercave.com/search?q=${encodeURIComponent(q)}`);
+      const words = q.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+      const cats = [...searchHtml.matchAll(/<a[^>]+href="(\/[a-z0-9-]+-wallpapers)"/g)]
+        .map((m) => m[1]);
+      cat = cats.find((c) => words.some((w) => c.includes(w))) || cats[0] || null;
+    } catch (e) {
+      cat = null; // search page unreachable — fall through to the slug guess
+    }
+    if (!cat) {
+      const slug = q.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      if (!slug) throw new Error("no matching category on WallpaperCave search page");
+      cat = `/${slug}-wallpapers`;
+    }
+    const { text: html, via } = await fetchHtml(absUrl("https://wallpapercave.com", cat));
     const out = [];
     const re = /<a href="(\/w\/[^"]+)" class="wpinkw">[\s\S]*?<img src="(\/wp\/[^"]+)" width="(\d+)" height="(\d+)"/g;
     let m;
@@ -86,11 +105,14 @@ const EXTRA_SOURCES = {
         page: absUrl("https://wallpapercave.com", m[1]),
         width: parseInt(m[3], 10), height: parseInt(m[4], 10),
         source: "WallpaperCave",
+        date: null, // category pages show no date — dateless in Newest sort
       });
     }
     const items = dedupe(out);
     if (!items.length) throw new Error("no results parsed from WallpaperCave category page");
-    return cap40(items);
+    const capped = cap40(items);
+    capped.via = via;
+    return capped;
   },
 
   // AlphaCoders — the documented API is dead (see header), so this scrapes the
@@ -102,7 +124,7 @@ const EXTRA_SOURCES = {
   // the "thumb-<size>-" prefix stripped (verified: HTTP 200, e.g. 3.7 MB
   // original for id 775441). No API key needed any more.
   async alphacoders(q) {
-    const html = await fetchHtml(`https://wall.alphacoders.com/search.php?search=${encodeURIComponent(q)}`);
+    const { text: html, via } = await fetchHtml(`https://wall.alphacoders.com/search.php?search=${encodeURIComponent(q)}`);
     const perId = new Map(); // id -> [thumb urls]
     for (const m of html.matchAll(/https:\/\/images\d*\.alphacoders\.com\/\d+\/thumb-(?:350|440|1920)-(\d+)\.(jpg|png|webp)/g)) {
       const arr = perId.get(m[1]) || [];
@@ -123,10 +145,12 @@ const EXTRA_SOURCES = {
         full: base.replace(/\/thumb-(?:350|440|1920)-/, "/").replace(/\.webp$/, ".jpg"),
         page: `https://wall.alphacoders.com/big.php?i=${id}`,
         width: 0, height: 0, source: "AlphaCoders",
+        date: null, // search pages show no date — dateless in Newest sort
       });
       if (out.length >= 40) break;
     }
     if (!out.length) throw new Error("no results parsed from AlphaCoders");
+    out.via = via;
     return out;
   },
 
@@ -137,7 +161,7 @@ const EXTRA_SOURCES = {
   // "Checking browser..." challenge to some direct requests; going through
   // the proxy returns the real page (verified 2026-11-15).
   async zerochan(q) {
-    const html = await fetchHtml(`https://www.zerochan.net/search?q=${encodeURIComponent(q)}`);
+    const { text: html, via } = await fetchHtml(`https://www.zerochan.net/search?q=${encodeURIComponent(q)}`);
     const out = [];
     const liRe = /<li[^>]+data-id="(\d+)"[^>]*>([\s\S]*?)<\/li>/g;
     let m;
@@ -155,11 +179,14 @@ const EXTRA_SOURCES = {
         width: res ? parseInt(res[1], 10) : 0,
         height: res ? parseInt(res[2], 10) : 0,
         source: "Zerochan",
+        date: null, // search pages show no date — dateless in Newest sort
       });
     }
     const items = dedupe(out);
     if (!items.length) throw new Error("no results parsed from Zerochan (it may be showing its browser check)");
-    return cap40(items);
+    const capped = cap40(items);
+    capped.via = via;
+    return capped;
   },
 };
 
