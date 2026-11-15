@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wallpaper Meta-Search</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Wallpaper Meta-Search</h1>
+  <p>One search box, every wallpaper source. Results come from the sites that let a browser ask them directly, plus a CORS proxy for the ones that don't. No server, no account, no tracking.</p>
+</header>
+
+<main>
+  <form id="search-form">
+    <input id="query" type="search" placeholder="e.g. code geass emperor lelouch" autocomplete="off" required>
+    <button type="submit">Search all</button>
+  </form>
+
+  <section class="controls">
+    <fieldset>
+      <legend>Sources (inline results)</legend>
+      <label><input type="checkbox" class="source" value="danbooru" checked> Danbooru</label>
+      <label><input type="checkbox" class="source" value="safebooru" checked> Safebooru</label>
+      <label><input type="checkbox" class="source" value="wallhaven" checked> Wallhaven</label>
+      <label><input type="checkbox" class="source" value="alphacoders"> AlphaCoders <span class="hint">(needs API key)</span></label>
+    </fieldset>
+
+    <label>Min. resolution
+      <select id="min-res">
+        <option value="0">Any</option>
+        <option value="1920x1080" selected>1920&times;1080+</option>
+        <option value="2560x1440">2560&times;1440+</option>
+        <option value="3440x1440">3440&times;1440+</option>
+      </select>
+    </label>
+
+    <label><input type="checkbox" id="sfw" checked> Safe / SFW only</label>
+  </section>
+
+  <details class="settings">
+    <summary>Settings &amp; why some sources need a proxy</summary>
+    <p>Wallhaven, Safebooru and AlphaCoders don't send the header that lets a web page query them directly, so those requests go through a public CORS proxy. Danbooru allows direct requests and never touches the proxy. If a proxied source comes back empty, the proxy is probably down — pick another one, or use the site links below.</p>
+    <label>CORS proxy (prefix, the target URL is appended, URL-encoded)
+      <input id="proxy" type="url" size="60" placeholder="https://api.allorigins.win/raw?url=">
+    </label>
+    <label>AlphaCoders API key <span class="hint">(free, from your AlphaCoders account &rarr; API; stored only in this browser)</span>
+      <input id="alpha-key" type="text" size="40" autocomplete="off">
+    </label>
+    <p class="hint">Prefer no proxy at all? Run the optional local proxy in <code>proxy/</code> (<code>node server.mjs</code>) and set the proxy to <code>http://localhost:8787/?url=</code>.</p>
+  </details>
+
+  <section id="site-links">
+    <h2>Also search on</h2>
+    <p>These sites have no usable open API, so they can't show results inline — one click opens their own search for the same query:</p>
+    <div id="site-buttons"></div>
+  </section>
+
+  <p id="status" aria-live="polite"></p>
+  <section id="results"></section>
+</main>
+
+<footer>
+  <p>Sources are searched live; nothing is cached or re-hosted. Respect each site's terms. Wallhaven, AlphaCoders, Danbooru and Safebooru are not affiliated with this project.</p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
