@@ -15,7 +15,7 @@
   --border-strong: #2f3542;
   --text: #e8eaf0;
   --muted: #9aa1b3;
-  --faint: #6a7186;
+  --faint: #878ea1;
   --accent: #7d8cff;
   --accent-ink: #aab4ff;
   --accent-soft: rgba(125, 140, 255, .12);
@@ -242,15 +242,6 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-.chip-tag {
-  font-size: .72rem;
-  font-weight: 700;
-  letter-spacing: .03em;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: rgba(255, 193, 77, .16);
-  color: #ffcf7d;
-}
 .field {
   display: inline-flex;
   align-items: center;
@@ -276,49 +267,6 @@ select {
   cursor: pointer;
 }
 select:hover { border-color: #3d4456; }
-.switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--muted);
-  font-size: .9rem;
-  font-weight: 600;
-  cursor: pointer;
-  user-select: none;
-}
-.switch input {
-  position: absolute;
-  opacity: 0;
-  width: 1px; height: 1px;
-  margin: 0;
-}
-.switch .track {
-  width: 42px; height: 24px;
-  flex: 0 0 auto;
-  border-radius: 999px;
-  background: #262b38;
-  border: 1px solid var(--border-strong);
-  position: relative;
-  transition: background .15s ease, border-color .15s ease;
-}
-.switch .knob {
-  position: absolute;
-  top: 2px; left: 2px;
-  width: 18px; height: 18px;
-  border-radius: 50%;
-  background: #cfd3e0;
-  transition: transform .15s ease, background .15s ease;
-}
-.switch:has(input:checked) { color: var(--text); }
-.switch:has(input:checked) .track {
-  background: var(--accent);
-  border-color: transparent;
-}
-.switch:has(input:checked) .knob { transform: translateX(18px); background: #0b0d12; }
-.switch:has(input:focus-visible) .track {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
 
 /* ---------- Settings (details) ---------- */
 .settings {
@@ -756,7 +704,12 @@ footer p { margin: 0; max-width: 80ch; }
   .card, .skeleton { margin-bottom: 16px; }
 }
 @media (max-width: 600px) {
-  .results { columns: 2; column-gap: 12px; }
+  /* One column, not two: at a ~180px card the Source / Full image / heart
+     row (minimum ~180px of buttons + gaps) is wider than the card, so
+     .card's overflow:hidden clips the heart button on every card — and on
+     touch the row is always visible, so every card shows it clipped. A
+     single full-width column gives the row room. */
+  .results { columns: 300px; column-gap: 12px; }
   .card, .skeleton { margin-bottom: 12px; }
   .chip { padding: 7px 10px; font-size: .88rem; }
 }
@@ -961,6 +914,17 @@ footer p { margin: 0; max-width: 80ch; }
   border-color: var(--accent);
   color: #fff;
 }
+/* Favorites is a third view with no tab of its own: while its toggle is
+   active, the Search tab must not claim to be the current view (the JS
+   marks it active whenever Favorites is on — setTrendingView(false)).
+   The class stays for the JS; only the look is neutralised. The
+   aria-selected attribute on the Search tab still says true in Favorites
+   view — that needs a one-line JS change, not a style one. */
+main:has(#favs-toggle.active) #tab-search.active {
+  background: var(--bg-soft);
+  border-color: var(--border-strong);
+  color: var(--muted);
+}
 
 /* ---------- Trending panel ---------- */
 /* Visible only in the Trending view: a one-line explainer, a refresh
@@ -980,6 +944,9 @@ footer p { margin: 0; max-width: 80ch; }
   letter-spacing: -.01em;
 }
 .trending-head p { margin: 0; color: var(--muted); font-size: .92rem; flex: 1 1 420px; }
+/* The Refresh button is a .btn-ghost, whose 18px top margin is meant for
+   empty states — inside the baseline-aligned head it would sit a line low. */
+.trending-head .btn-ghost { margin-top: 0; }
 #trending-chips { margin-top: 12px; }
 .trend-chip {
   padding: 8px 14px;

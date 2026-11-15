@@ -253,17 +253,25 @@ const EXTRA_SOURCES = {
   // full URL uses the true file extension instead of guessing .jpg/.png.
   async alphacoders(q) {
     q = formatQueryFor("alphacoders", q);
-    const { text: html, via } = await fetchHtml(`https://wall.alphacoders.com/search.php?search=${encodeURIComponent(q)}`);
     // Second page: the search page infinite-scrolls via
     // alphacoders.com/search/view?q=<q>&page=2&quickload=1 (verified live
     // 2026-11-15: returns new items in the same markup; the plain
-    // search.php?page=2 returns page 1 again). A failed page-2 fetch just
-    // leaves the page-1 results standing.
+    // search.php?page=2 returns page 1 again). Its URL is built from the
+    // query alone — unlike Wallpapers.com / Zerochan, whose page 2 needs a
+    // link from page 1 — so both pages fetch concurrently instead of
+    // sequentially: one round-trip saved per search (measured in node:
+    // ~250 ms at local-proxy speed, up to ~20 s on the slow public
+    // proxies). allSettled: page 1 still throws if it fails (page 2's
+    // result is then ignored — one wasted fetch in that failure case),
+    // and a failed page 2 still just leaves the page-1 results standing.
+    const [p1, p2] = await Promise.allSettled([
+      fetchHtml(`https://wall.alphacoders.com/search.php?search=${encodeURIComponent(q)}`),
+      fetchHtml(`https://alphacoders.com/search/view?q=${encodeURIComponent(q)}&page=2&quickload=1`),
+    ]);
+    if (p1.status === "rejected") throw p1.reason;
+    const { text: html, via } = p1.value;
     const pages = [html];
-    try {
-      const { text: html2 } = await fetchHtml(`https://alphacoders.com/search/view?q=${encodeURIComponent(q)}&page=2&quickload=1`);
-      pages.push(html2);
-    } catch { /* page 2 is a bonus */ }
+    if (p2.status === "fulfilled") pages.push(p2.value.text);
     const dims = new Map(); // id -> { w, h, fmt }
     for (const pageHtml of pages) {
       for (const dm of pageHtml.matchAll(/big\.php\?i=(\d+)"[\s\S]{0,900}?<meta itemprop="width" content="(\d+)">\s*<meta itemprop="height" content="(\d+)">(?:\s*<meta itemprop="fileFormat" content="(\w+)">)?/g)) {

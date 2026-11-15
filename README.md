@@ -222,15 +222,20 @@ clean; on touch devices, which have no hover, the row is always visible.
 — so on a wide monitor the masonry just adds more ~300px columns instead
 of leaving empty margins.
 
-Only Zerochan images go through the local proxy when it is running —
-every other source's images load direct, so a search never queues ~200
-images behind the proxy's 6-connection limit (changed 2026-11-15: the
-proxy used to carry every image). The proxy sends no Referer and a plain
-UA, which dodges Referer-based hotlink blocks. Verified 2026-11-15:
-Zerochan full images that stalled mid-download direct came through the
-proxy in ~2.4 s. The proxy does NOT change the egress IP, so it can't
-dodge an IP-based block. With the proxy off, Zerochan full images stall
-direct again (the thumbnail still shows).
+Zerochan and WallpaperCave images go through a proxy when one is
+configured — the local proxy when it is running, else your Cloudflare
+Worker when one is set and answering. Every other source's images load
+direct, so a search never queues ~200 images behind the proxy's
+6-connection limit (changed 2026-11-15: the proxy used to carry every
+image). The proxy sends no Referer and a plain UA, which dodges
+Referer-based hotlink blocks. Verified 2026-11-15: Zerochan full images
+that stalled mid-download direct came through the proxy in ~2.4 s, and
+WallpaperCave images that failed in bursts direct (32/100 cards on the
+hosted site) come through it instead. The direct URL stays as a fallback
+candidate, so a proxy failure for one image doesn't brick its card. The
+proxy does NOT change the egress IP, so it can't dodge an IP-based block.
+With no proxy configured, Zerochan full images stall direct again (the
+thumbnail still shows).
 
 ## Preload
 
@@ -307,6 +312,44 @@ night, mountains, neon, abstract) runs that term as a normal search:
 back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
+
+## Changes in v5.5 (round 1 of the production-readiness loop, 2026-11-16 — unreleased)
+
+- **Overlapping loads no longer clobber each other**: a slow search
+  finishing after a newer one (or a trending load after a search) used to
+  overwrite the current view with the wrong query's results. Loads now
+  carry a generation number and only the newest one renders, into the view
+  it belongs to; stale loads still keep their data for back-navigation.
+- **WallpaperCave images go through the proxy** (local proxy, else the
+  Worker when set and answering) with the direct URL as a fallback — the
+  hosted site's 32/100 burst failures were WallpaperCave throttling direct
+  requests. The Worker now allows Zerochan's image hosts too, and its
+  health is probed at startup; a healthy Worker also hides the proxy-off
+  banner (it used to stay up after the Worker was set up). On the hosted
+  site with no proxy configured, images still load direct and can still be
+  throttled — Retry covers those, and the Worker deploy is the real fix.
+- **Favorites keep the listing aspect ratio** (Wallpapers.com items
+  re-rendered at 4:3 and vanished under ratio filters).
+- **Preload meter charges huge files at the sample's cost**, not the
+  original's (a 98 MB original with a ~150 KB sample used to eat the whole
+  1 GB target after ~10 cards).
+- **Sort order is remembered** across reloads, like every other control.
+- Card link/image URLs are HTML-escaped; a search with no sources
+  selected says so in the status pill. Retry on a single-candidate card
+  actually probes now (it used to report success instantly on a broken
+  card).
+- **Phones**: the grid is one full-width column below 600px — the
+  Source / Full image / heart row was wider than the two-column cards, so
+  the heart button was clipped on every card. Small grey text is brighter
+  (--faint now passes WCAG AA), the Search tab no longer claims to be
+  current while viewing Favorites (look and aria-selected), the Trending
+  refresh button aligns with its heading, and dead CSS is gone.
+- **Faster**: AlphaCoders fetches both pages in parallel (about 2×
+  locally, up to ~20 s saved on slow public proxies); tightening the ratio
+  filter or lowering the limit reuses the cards that stay instead of
+  rebuilding the grid; image loads skip their DOM walks; "Largest" sort
+  precomputes areas. All behavior-identical, measured in node.
+- QA harness 174 checks, optimizer all green.
 
 ## Changes in v5.4 (2026-11-15)
 

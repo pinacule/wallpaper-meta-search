@@ -18,20 +18,55 @@ const $$ = (s) => [...document.querySelectorAll(s)];
 let localProxyUp = false;
 const pageIsHttp = typeof window !== "undefined" && window.location.protocol === "http:";
 
-// Image hosts that genuinely need the local proxy. Everything else loads
-// direct — spreading requests over the real CDN hosts (six connections
-// each) instead of funnelling every image through localhost:8787, where the
-// browser's six-connection cap made a couple of slow files starve every
-// thumbnail behind them (black cards with only alt text, 2026-11-15).
-// Zerochan stays proxied: its full images were observed stalling
-// mid-download direct (HTTP 200, then nothing) while the proxy delivered
-// them reliably. The proxy sends no Referer, so it also sidesteps
-// Referer-based hotlink blocks for those two hosts.
-// NOTE: the proxy does NOT change the egress IP, so it can't dodge an
+// Image hosts that genuinely need a proxy instead of a direct load.
+// Everything else loads direct — spreading requests over the real CDN hosts
+// (six connections each) instead of funnelling every image through
+// localhost:8787, where the browser's six-connection cap made a couple of
+// slow files starve every thumbnail behind them (black cards with only alt
+// text, 2026-11-15). The proxy sends no Referer, so it also sidesteps
+// Referer-based hotlink blocks for these hosts.
+//   Zerochan: its full images were observed stalling mid-download direct
+//     (HTTP 200, then nothing) while the proxy delivered them reliably.
+//   WallpaperCave: on the hosted site 32/100 cards failed with "blocked or
+//     missing" while the same URLs loaded fine directly — WallpaperCave
+//     throttles the burst of direct image requests from one browser. The
+//     proxy fetches server-side (one egress, no burst), and the direct URL
+//     stays as a fallback candidate (see renderResults).
+// The proxy is the local one when it is up (localhost pages only), else the
+// user's Cloudflare Worker when one is set and answering (workerUp —
+// probed at startup like the local proxy). With neither configured the
+// images load direct, as before.
+// NOTE: a proxy does NOT change the egress IP, so it can't dodge an
 // IP-based block (e.g. a CDN 403ing a datacenter/VPN IP).
-const IMAGE_PROXY_HOSTS = new Set(["static.zerochan.net", "s3.zerochan.net"]);
+const IMAGE_PROXY_HOSTS = new Set(["static.zerochan.net", "s3.zerochan.net", "wallpapercave.com"]);
+let workerUp = false; // the configured Worker answered its health probe
+let workerUrlElCache = null;
+function workerUrlSetting() {
+  // Cached element, fresh value — mirrors preloadTarget(): the input's
+  // value is read on every call so a pasted URL takes effect immediately,
+  // without a DOM query per image.
+  if (!workerUrlElCache) workerUrlElCache = $("#worker-url");
+  return workerUrlElCache ? workerUrlElCache.value.trim() : "";
+}
+// Health probe for the Worker's image path: any HTTP response counts (the
+// worker answers 400 with usage text when no ?url= is given — same rule as
+// probeLocalProxy). No AbortController here: the QA harness has none, so
+// the timeout is a race instead (the losing fetch's rejection is swallowed
+// so it never surfaces as unhandled).
+async function probeWorker(timeoutMs = 2500) {
+  const u = workerUrlSetting();
+  if (!u) return false;
+  const p = fetch(u);
+  p.catch(() => {});
+  try {
+    await Promise.race([p, sleep(timeoutMs).then(() => { throw new Error("worker probe timeout"); })]);
+    return true;
+  } catch {
+    return false;
+  }
+}
 function proxiedImageUrl(u) {
-  if (!localProxyUp || !pageIsHttp || !u) return u;
+  if (!u) return u;
   // Host check without `new URL()`: this runs 3x per card (thumb, full,
   // each alt), and URL parsing costs ~8µs a call — ~4ms per 159-card
   // render with the proxy up. Splitting on "/" gives the host at index 2
@@ -40,7 +75,10 @@ function proxiedImageUrl(u) {
   // still matches, like URL.hostname would.
   const host = u.split("/")[2];
   if (!host || !IMAGE_PROXY_HOSTS.has(host.toLowerCase())) return u;
-  return "http://localhost:8787/?url=" + encodeURIComponent(u);
+  if (localProxyUp && pageIsHttp) return "http://localhost:8787/?url=" + encodeURIComponent(u);
+  const wu = workerUrlSetting();
+  if (workerUp && wu) return `${wu.replace(/\?$/, "").replace(/\/$/, "")}/?url=${encodeURIComponent(u)}`;
+  return u;
 }
 
 // NOTE: there is deliberately NO shared "last proxy" global. An earlier
@@ -78,6 +116,13 @@ function loadSettings() {
   $("#purity").value = ["safe", "mixed", "nsfw"].includes(p) ? p : "safe";
   const dr = localStorage.getItem("wms.deviceRatio");
   $("#device-ratio").value = ["all", "pc", "ultrawide", "phone"].includes(dr) ? dr : "all";
+  // Sort was the one view control that didn't survive a reload (limit,
+  // ratio, purity and preload all persist) — restore it the same way.
+  const sortEl = $("#sort");
+  if (sortEl) {
+    const sv = localStorage.getItem("wms.sort");
+    sortEl.value = ["best", "largest", "newest", "source"].includes(sv) ? sv : "best";
+  }
   const limEl = $("#limit");
   if (limEl) {
     const lim = localStorage.getItem("wms.limit");
@@ -105,6 +150,8 @@ function saveSettings() {
   localStorage.setItem("wms.workerUrl", $("#worker-url").value.trim());
   localStorage.setItem("wms.purity", $("#purity").value);
   localStorage.setItem("wms.deviceRatio", $("#device-ratio").value);
+  const sortEl = $("#sort");
+  if (sortEl) localStorage.setItem("wms.sort", sortEl.value);
   const limEl = $("#limit");
   if (limEl) localStorage.setItem("wms.limit", limEl.value);
   const preloadEl = $("#data-preload");
@@ -153,17 +200,24 @@ async function updateProxyStatus() {
   const el = $("#proxy-status");
   const banner = $("#proxy-banner");
   const bannerText = $("#proxy-banner-text");
-  const up = await ProxyClient.probeLocalProxy();
+  const [up, wUp] = await Promise.all([ProxyClient.probeLocalProxy(), probeWorker()]);
   localProxyUp = up;
+  workerUp = wUp;
   const hosted = window.location.protocol === "https:";
   if (el) {
     el.textContent = up
       ? "Local proxy detected on port 8787 — Wallhaven and the other proxied sources will go through it."
-      : "Local proxy not running — sources will try your Worker, then public proxies. Run start.sh (Linux/Mac) or start.bat (Windows) to start it.";
+      : workerUp
+        ? "Cloudflare Worker detected — Wallhaven and the other proxied sources will go through it."
+        : "Local proxy not running — sources will try your Worker, then public proxies. Run start.sh (Linux/Mac) or start.bat (Windows) to start it.";
   }
   if (banner) {
-    banner.hidden = up;
-    if (!up && bannerText) {
+    // The banner warns that proxied sources are unreliable without a
+    // proxy — a healthy Worker IS a proxy, so it hides the banner too
+    // (it used to stay up telling the user to set up the Worker they had
+    // already set up).
+    banner.hidden = up || workerUp;
+    if (!up && !workerUp && bannerText) {
       // Plain wording: name what breaks and the exact fix. The banner is
       // sticky (see style.css) so it can't scroll away unnoticed.
       bannerText.innerHTML = hosted
@@ -599,6 +653,13 @@ const WALLHAVEN_MAX_PAGES = 2;
 let lastResults = [];
 let lastReports = [];
 let lastQuery = "";
+// Generation counter for async loads: search() and loadTrending() capture
+// it at start and only render if it still matches when their fetches
+// finish. Without this, a slow first search finishing after a second one
+// (or a trending load finishing after a search) overwrote the current view
+// with stale results for the wrong query — the query box said "second"
+// while the grid showed the first search's cards.
+let viewSeq = 0;
 
 function sortMode() {
   const el = $("#sort");
@@ -709,7 +770,13 @@ function sortResults(list) {
     });
   }
   // "largest" — the original behaviour: pixel area, largest first.
-  return [...list].sort((a, b) => (b.width * b.height) - (a.width * a.height));
+  // Area precomputed once per item (same fix as "newest" dates): the
+  // comparator used to multiply width x height on every comparison.
+  // Plain width*height (no ||0) so size-unknown items keep their NaN
+  // area and sort exactly as before (measured in node: 0.168 -> 0.126 ms
+  // per 400-item sort).
+  const areaByItem = new Map(list.map((r) => [r, r.width * r.height]));
+  return [...list].sort((a, b) => areaByItem.get(b) - areaByItem.get(a));
 }
 
 function renderSiteLinks(q) {
@@ -920,10 +987,15 @@ function markImageFailed(img, reason) {
 function imgLoaded(img) {
   const w = img.naturalWidth, h = img.naturalHeight;
   if (!w || !h) return;
-  const anchor = img.closest("a.thumb");
+  // The anchor/card/badge were cached at render time (see renderResults):
+  // a load then needs no DOM walk — ~300 traversals saved per 100-card
+  // render across the thumb + full loads (measured in node: 7.23 -> 2.99 ms
+  // per 100 loads). The fallbacks keep direct calls (harness, or an img
+  // built outside renderResults) working.
+  const anchor = img._anchor || img.closest("a.thumb");
   if (anchor) anchor.style.aspectRatio = `${w} / ${h}`;
-  const card = img.closest(".card");
-  const badge = card && card.querySelector(".badge-res");
+  const card = img._card || img.closest(".card");
+  const badge = img._badge || (card && card.querySelector(".badge-res"));
   if (badge && badge.textContent === "size unknown"
       && img.getAttribute("src") === img.dataset.full) {
     badge.textContent = `${w}×${h}`;
@@ -958,9 +1030,10 @@ const probedFullUrls = new Set();
 // from the known dimensions (observed range across real files: ~0.1 for a
 // flat Danbooru jpg to ~1.4 for a big AlphaCoders PNG; 0.5 is the middle),
 // or a flat 5 MB when even the dimensions are unknown. A successful
-// upgrade is charged once, at the FULL file's cost, even if a smaller
-// alternate is what actually loaded (a conservative ceiling); failed or
-// timed-out probes charge nothing (their partial bytes are uncounted).
+// upgrade is charged once, at the displayed image's cost (the ~850px sample
+// for huge files — see preloadCost — the full file otherwise), even if a
+// smaller alternate is what actually loaded; failed or timed-out probes
+// charge nothing (their partial bytes are uncounted).
 // The meter therefore reads "≈" throughout. Counting via the local proxy
 // was considered and rejected: only Zerochan images go through it now, so
 // it would see a small fraction of the bytes, and the browser's Resource
@@ -1019,6 +1092,18 @@ function updatePreloadPresets() {
 }
 
 function preloadCost(r) {
+  // Huge originals display their ~850px sample, not the original — charge
+  // the sample's estimated cost, not the original's file_size (a 98 MB
+  // original with a ~150 KB sample used to eat the whole 1 GB target after
+  // ~10 cards). The sample keeps the original's aspect ratio with its long
+  // side at ~850 px; same 0.5 bytes/px estimate as below.
+  if (r.displayFull) {
+    const w = r.width || 0, h = r.height || 0;
+    if (w > 0 && h > 0) {
+      const s = 850 / Math.max(w, h);
+      return Math.round(w * s * h * s * 0.5);
+    }
+  }
   if (typeof r.fileSize === "number" && r.fileSize > 0) return Math.round(r.fileSize);
   const w = r.width || 0, h = r.height || 0;
   if (w > 0 && h > 0) return Math.round(w * h * 0.5);
@@ -1093,9 +1178,12 @@ function pumpPreload() {
   });
 }
 
-function restartPreload() {
+function restartPreload(imgs) {
   const box = $("#results");
-  preloadQueue = box ? [...box.querySelectorAll(".card img")] : [];
+  // The full rebuild already collected the grid's imgs (see renderResults);
+  // passing them in skips a second querySelectorAll over the whole grid.
+  // Other callers (the sort-only fast path) pass nothing and query as before.
+  preloadQueue = imgs || (box ? [...box.querySelectorAll(".card img")] : []);
   preloadIndex = 0;
   updatePreloadMeter();
   pumpPreload();
@@ -1128,8 +1216,13 @@ function loadFullImage(img, onDone) {
   // same image). Deduped — e.g. WallpaperCave's thumb IS its full image.
   const candidates = [img.dataset.full, ...(img.dataset.alts ? img.dataset.alts.split("|").filter(Boolean) : [])]
     .filter((u, i, a) => u && a.indexOf(u) === i);
-  // Already showing the full image (WallpaperCave): nothing to upgrade.
-  if (candidates.length === 1 && img.getAttribute("src") === candidates[0]) {
+  // Already showing the intended display image (WallpaperCave: the thumb
+  // IS the full image): nothing to upgrade. The _thumbErrored flag matters
+  // — after a thumb error the src still equals the display URL, but the
+  // image never arrived, so it must probe (the direct fallback candidate)
+  // instead of declaring itself done. Without the flag, Retry on a
+  // single-candidate card was a no-op that instantly reported success.
+  if (!img._thumbErrored && img.getAttribute("src") === candidates[0]) {
     img.dataset.state = "full";
     done("cached");
     return;
@@ -1222,6 +1315,12 @@ function imgThumbError(img) {
     markImageFailed(img, "error");
     return;
   }
+  // Remember the failure for loadFullImage's early return above: the src
+  // still equals the display URL, but the image never arrived — without
+  // this flag the card would declare itself done instead of probing the
+  // direct fallback. (Not cleared on Retry: a retry must probe, not
+  // early-return.)
+  img._thumbErrored = true;
   img.style.visibility = "hidden";
   loadFullImage(img);
 }
@@ -1288,6 +1387,11 @@ function favSnapshot(r) {
     score: typeof r.score === "number" ? r.score : null,
     thumbOnly: !!r.thumbOnly,
     displayFull: r.displayFull || null,
+    // Wallpapers.com items have no pixel dims, only a listing aspect ratio
+    // — without these, a favorite re-rendered at the 4:3 fallback and was
+    // hidden by every specific ratio filter even though the item is landscape.
+    ratioW: r.ratioW || 0,
+    ratioH: r.ratioH || 0,
     fileSize: typeof r.fileSize === "number" ? r.fileSize : null,
   };
 }
@@ -1480,10 +1584,31 @@ function renderResults(results, reports, q) {
   // click handler updates favorite buttons in place — so the stored nodes
   // are always current. The isConnected check makes a stale cache entry
   // left behind by a skeleton/empty-state render harmless.)
-  if (cardByPage.size === visible.length
+  // It also covers a SHRINKING visible set (ratio tightened, limit
+  // lowered): the cards that stay are reused in place and the rest are
+  // dropped, so a ratio toggle no longer rebuilds ~100 cards, re-parses
+  // their HTML and re-observes their images (measured in node, 100 -> 50
+  // ratio change: 15.5 ms median full rebuild -> 9.5 ms; a real browser
+  // saves the innerHTML parse, new DOM nodes and image re-handling on
+  // top). A growing set still rebuilds (new cards needed), as does any
+  // proxy/view change.
+  // Dropped cards get the same treatment as a full rebuild (see
+  // discardRenderedCards): their in-flight upgrades are cancelled and
+  // they leave the observer, so no probe keeps downloading for a card
+  // that is no longer shown.
+  const visiblePages = new Set(visible.map((r) => r.page));
+  if (cardByPage.size >= visible.length
       && localProxyUp === lastRenderProxyUp && favsView === lastRenderFavsView
       && trendingView === lastRenderTrendingView
       && visible.every((r) => { const el = cardByPage.get(r.page); return el && el.isConnected; })) {
+    for (const [page, el] of cardByPage) {
+      if (visiblePages.has(page)) continue;
+      const img = el.querySelector("img");
+      if (img && typeof img._cancelUpgrade === "function") img._cancelUpgrade();
+      if (imageObserver && img) imageObserver.unobserve(img);
+      el.remove();
+    }
+    cardByPage = new Map(visible.map((r) => [r.page, cardByPage.get(r.page)]));
     for (const r of visible) box.appendChild(cardByPage.get(r.page));
     restartPreload(); // same cards, new order — preload follows the new order
     return;
@@ -1541,18 +1666,25 @@ function renderResults(results, reports, q) {
       ...(displayFull !== r.full ? [r.full] : []),
       ...(r.alts || []).filter((u) => u && u !== r.full && u !== displayFull),
     ].map(proxiedImageUrl);
+    // If the full image is proxy-routed (Zerochan, WallpaperCave), keep
+    // the direct URL as a final fallback candidate: a proxy that fails
+    // for this one image must not brick a card the direct fetch could
+    // still serve. The proxied URL is tried first, so a healthy proxy is
+    // never bypassed — and with no proxy configured the direct URL is
+    // already the primary, so nothing is appended.
+    if (proxiedImageUrl(r.full) !== r.full && !alts.includes(r.full)) alts.push(r.full);
     // Favorite state read once per card, from the per-render Set above.
     const fav = favPages.has(r.page);
     return `
     <article class="card">
-      <a class="thumb" href="${fullUrl}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${thumbSrc}" data-full="${escapeHtml(displayUrl)}" data-alts="${escapeHtml(alts.join("|"))}"${r.thumbOnly ? ' data-thumb-only="1"' : ""} data-cost="${cost}" data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
+      <a class="thumb" href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${escapeHtml(thumbSrc)}" data-full="${escapeHtml(displayUrl)}" data-alts="${escapeHtml(alts.join("|"))}"${r.thumbOnly ? ' data-thumb-only="1"' : ""} data-cost="${cost}" data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
         <span class="badge badge-res">${res}</span>
         <span class="badge badge-src">${r.source}</span>
       </a>
       <div class="meta">
         <div class="links">
-          <a href="${r.page}" target="_blank" rel="noopener">Source page ↗</a>
-          <a class="full-link" href="${fullUrl}" target="_blank" rel="noopener">Full image ↗</a>
+          <a href="${escapeHtml(r.page)}" target="_blank" rel="noopener">Source page ↗</a>
+          <a class="full-link" href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener">Full image ↗</a>
           <button type="button" class="img-retry" data-action="retry-img" style="display:none">Retry</button>
           <button type="button" class="fav-btn${fav ? " fav-on" : ""}" data-action="toggle-fav" data-page="${escapeHtml(r.page)}" aria-pressed="${fav ? "true" : "false"}" aria-label="Save to favorites" title="Save to favorites">${fav ? "♥" : "♡"}</button>
         </div>
@@ -1573,11 +1705,27 @@ function renderResults(results, reports, q) {
   // cards come from the imgs just observed (one <img> per card, in document
   // order) instead of a second querySelectorAll over the whole grid.
   const cards = [...imgs].map((img) => img.closest(".card"));
+  // Cache the nodes imgLoaded needs per image (anchor, card, badge) so a
+  // load doesn't walk the DOM three times per image — ~300 traversals
+  // saved per 100-card render across the thumb + full loads (measured in
+  // node: 7.23 -> 2.99 ms per 100 loads). The lookups are O(1), not walks:
+  // the img is a direct child of its anchor, and the res badge is its
+  // next element sibling (see the card template) — so attaching the refs
+  // costs no traversal either. The fallbacks keep any img built outside
+  // renderResults (harness, template drift) working: a missing badge
+  // just stays null and imgLoaded falls back to a query at load time.
+  // The card itself is free (the closest() above already found it).
+  imgs.forEach((img, i) => {
+    img._anchor = img.parentElement || img.parent || img.closest("a.thumb");
+    img._card = cards[i];
+    const sib = img.nextElementSibling;
+    img._badge = (sib && typeof sib.className === "string" && sib.className.includes("badge-res")) ? sib : null;
+  });
   cardByPage = new Map(visible.map((r, i) => [r.page, cards[i]]));
   lastRenderProxyUp = localProxyUp;
   lastRenderFavsView = favsView;
   lastRenderTrendingView = trendingView;
-  restartPreload();
+  restartPreload(imgs);
 }
 
 async function search(ev) {
@@ -1585,6 +1733,8 @@ async function search(ev) {
   saveSettings();
   const q = $("#query").value.trim();
   if (!q) return;
+  // Generation guard against overlapping loads (see viewSeq above).
+  const seq = ++viewSeq;
   // A new search shows search results, not the Favorites or Trending view.
   setFavsView(false);
   setTrendingView(false);
@@ -1610,6 +1760,11 @@ async function search(ev) {
 
   const reports = [];
   const all = [];
+  if (!chosen.length) {
+    // All sources unchecked: say so in the pill instead of showing an
+    // empty status line above a bare "No wallpapers found".
+    reports.push(["Search", "no sources selected — enable at least one in Sources", true, 0]);
+  }
   await Promise.all(chosen.map(async (name) => {
     try {
       const items = await SOURCES[name](q);
@@ -1631,18 +1786,29 @@ async function search(ev) {
     }
   }));
   // Keep the fetched set so a sort change can re-render without re-searching.
-  lastResults = all;
-  lastReports = reports;
-  lastQuery = q;
+  // Assigned only when this load is still the newest: a stale load's data
+  // must not replace the current search's — otherwise a sort change after
+  // an overlapping search would flip the grid back to the old query.
+  if (seq === viewSeq) {
+    lastResults = all;
+    lastReports = reports;
+    lastQuery = q;
+  }
+  // Only the newest load renders — and only into the search view. A slow
+  // load finishing after a newer search, a trending load, or a switch to
+  // Favorites must not overwrite the current view with the wrong query's
+  // results.
+  if (seq !== viewSeq || trendingView || favsView) return;
   renderResults(all, reports, q);
 }
 
 $("#search-form").addEventListener("submit", search);
 $("#proxy").addEventListener("change", saveSettings);
-$("#worker-url").addEventListener("change", saveSettings);
+$("#worker-url").addEventListener("change", () => { saveSettings(); refreshProxyAndRerender(); });
 $("#purity").addEventListener("change", saveSettings);
 $("#wh-key").addEventListener("change", saveSettings);
 $("#sort").addEventListener("change", () => {
+  saveSettings();
   if (favsView) renderFavsView();
   else if (trendingView) renderTrendingView();
   else if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
@@ -1729,22 +1895,24 @@ $$(".trend-chip").forEach((b) => b.addEventListener("click", () => {
   $("#query").value = q;
   $("#search-form").requestSubmit();
 }));
-// Banner action: re-probe the local proxy (e.g. after starting start.sh)
-// and hide the banner if it's up now. If the proxy just came up and cards
-// are already on screen, re-render so their image URLs get the proxy route
-// (previously-verified full images swap in immediately — see
-// probedFullUrls — so this is cheap). Stays in the Favorites view if
-// that's where the user is.
-const recheckBtn = $("#proxy-recheck");
-if (recheckBtn) recheckBtn.addEventListener("click", async () => {
-  const wasUp = localProxyUp;
+// Re-probe both proxies and re-render the current view if either just came
+// up: image URLs are proxy-routed at render time, so a proxy that appears
+// after the render (local proxy started, Worker URL pasted) only takes
+// effect for images after a re-render. Shared by the banner's recheck
+// button and the Worker URL field's change handler. Previously-verified
+// full images swap in immediately (see probedFullUrls), so this is cheap.
+// Stays in the Favorites view if that's where the user is.
+async function refreshProxyAndRerender() {
+  const wasUp = localProxyUp, wasWorkerUp = workerUp;
   await updateProxyStatus();
-  if (!wasUp && localProxyUp && lastReports.length) {
-    if (favsView) renderFavsView();
-    else if (trendingView) renderTrendingView();
-    else renderResults(lastResults, lastReports, lastQuery);
-  }
-});
+  const cameUp = (!wasUp && localProxyUp) || (!wasWorkerUp && workerUp);
+  if (!cameUp) return;
+  if (favsView) renderFavsView();
+  else if (trendingView && lastTrendingReports.length) renderTrendingView();
+  else if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
+}
+const recheckBtn = $("#proxy-recheck");
+if (recheckBtn) recheckBtn.addEventListener("click", refreshProxyAndRerender);
 
 // One status-pill line per source, shared by search() and loadTrending():
 // same wording, same hidden-count note, same purity suffixes — a trending
@@ -1827,7 +1995,12 @@ let viewBeforeFavs = "search";
 function setTrendingView(on) {
   trendingView = on;
   const s = $("#tab-search"), t = $("#tab-trending");
-  if (s) { s.classList.toggle("active", !on); s.setAttribute("aria-selected", !on ? "true" : "false"); }
+  // Favorites is a third view with no tab of its own: renderFavsView calls
+  // setTrendingView(false) while favsView is on, and the Search tab must
+  // not claim to be current then (its visual state is neutralised in CSS;
+  // see main:has(#favs-toggle.active)).
+  const searchCurrent = !on && !favsView;
+  if (s) { s.classList.toggle("active", searchCurrent); s.setAttribute("aria-selected", searchCurrent ? "true" : "false"); }
   if (t) { t.classList.toggle("active", on); t.setAttribute("aria-selected", on ? "true" : "false"); }
   const panel = $("#trending-panel");
   if (panel) panel.hidden = !on;
@@ -1847,6 +2020,7 @@ async function loadTrending(force) {
   if (!force && lastTrendingReports.length) { renderTrendingView(); return; }
   if (trendingLoading) return;
   trendingLoading = true;
+  const seq = ++viewSeq; // generation guard, see search()
   // New session: the preload meter starts over (bytes already downloaded
   // stay downloaded — the meter counts this view's preloads).
   preloadSpent = 0;
@@ -1881,9 +2055,19 @@ async function loadTrending(force) {
       }
     }));
   }
-  lastTrendingResults = all;
-  lastTrendingReports = reports;
+  // Keep the fetched set for back-navigation — but only when this load is
+  // still the newest (see search(): a stale load must not replace the
+  // current view's data).
+  if (seq === viewSeq) {
+    lastTrendingResults = all;
+    lastTrendingReports = reports;
+  }
+  // Reset before the early return below: a stale load must not leave the
+  // flag stuck, or every later refresh click would be swallowed.
   trendingLoading = false;
+  // Only the newest load renders, and only while the Trending view is
+  // still showing (same race as search() above).
+  if (seq !== viewSeq || !trendingView || favsView) return;
   renderResults(all, reports, "Trending");
 }
 

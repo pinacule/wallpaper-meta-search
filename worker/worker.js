@@ -17,6 +17,13 @@ const ALLOWED = [
   /^https:\/\/wall\.alphacoders\.com\/search\.php/,
   /^https:\/\/alphacoders\.com\//,
   /^https:\/\/www\.zerochan\.net\//,
+  // Image files the app routes through a proxy (IMAGE_PROXY_HOSTS in
+  // app.js): Zerochan's full images stall direct and WallpaperCave
+  // throttles direct bursts. Both hosts are wallpaper-only, so the worker
+  // still can't be abused as a general open proxy. (WallpaperCave images
+  // are already covered by the wallpapercave.com pattern above.)
+  /^https:\/\/static\.zerochan\.net\//,
+  /^https:\/\/s3\.zerochan\.net\//,
 ];
 
 const CORS = {

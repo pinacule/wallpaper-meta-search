@@ -33,6 +33,9 @@ search. The status line under each search will say `via worker` when it's used.
 
 ## What it does
 
-Forwards `?url=` to the wallpaper APIs only (`wallhaven.cc/api`,
-`safebooru.org` dapi, `wall.alphacoders.com/api2.0`) and adds CORS headers.
+Forwards `?url=` to the wallpaper APIs (`wallhaven.cc/api`,
+`safebooru.org` dapi, `wall.alphacoders.com/api2.0`), the search pages the
+scraping adapters fetch (wallpapers.com, wallpapercave.com,
+alphacoders.com, zerochan.net), and the image files the app routes
+through a proxy (Zerochan and WallpaperCave) — and adds CORS headers.
 Any other host gets a 400, so it can't be abused as a general open proxy.
