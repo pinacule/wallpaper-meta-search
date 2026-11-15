@@ -85,8 +85,14 @@ function loadSettings() {
   }
   const preloadEl = $("#data-preload");
   if (preloadEl) {
-    const pv = localStorage.getItem("wms.preload");
-    preloadEl.value = PRELOAD_VALUES.includes(pv) ? pv : String(PRELOAD_DEFAULT);
+    // Stored format is bytes (v5.3); the input shows GB. Anything
+    // unparseable falls back to the 1 GB default, as before.
+    const raw = localStorage.getItem("wms.preload");
+    const pv = raw === null ? NaN : Number(raw);
+    preloadEl.value = (Number.isFinite(pv) && pv >= 0)
+      ? preloadBytesToGb(Math.min(pv, PRELOAD_MAX_GB * GB))
+      : preloadBytesToGb(PRELOAD_DEFAULT);
+    updatePreloadPresets();
   }
   updatePreloadMeter();
   const whKeyEl = $("#wh-key");
@@ -102,7 +108,8 @@ function saveSettings() {
   const limEl = $("#limit");
   if (limEl) localStorage.setItem("wms.limit", limEl.value);
   const preloadEl = $("#data-preload");
-  if (preloadEl) localStorage.setItem("wms.preload", preloadEl.value);
+  // The input holds GB; storage keeps the v5.3 byte format.
+  if (preloadEl) localStorage.setItem("wms.preload", String(preloadTarget()));
   const whKeyEl = $("#wh-key");
   if (whKeyEl) localStorage.setItem("wms.whKey", whKeyEl.value.trim());
 }
@@ -237,9 +244,12 @@ async function fetchJson(url, viaProxy) {
 // far to paginate. Boorus return newest-first, and the newest posts are
 // mostly vertical phone art, so a single small page can be wiped out by
 // the min-resolution filter — fetch big pages until we have enough.
-const BOORU_TARGET = 40;
-const BOORU_MAX_PAGES = 4;
-const BOORU_PAGE_SIZE = 100;
+// (v5.4: 200/post pages, 2 pages, target 100 passing — a strict filter
+// like 3440x1440+ needs the depth; the old 40-target stopped after one
+// page even when the user asked for All results.)
+const BOORU_TARGET = 100;
+const BOORU_MAX_PAGES = 2;
+const BOORU_PAGE_SIZE = 200;
 const BOORU_PAGE_DELAY_MS = 250;
 
 function sleep(ms) {
@@ -313,8 +323,18 @@ function pickBooruFile(fileUrl, sampleUrl) {
 // the boorus, `.hidden` — see the note at the top about why `via` is
 // per-call, never a global. ---
 const SOURCES = {
-  async danbooru(q) {
-    const tags = formatQueryFor("danbooru", q);
+  async danbooru(q, opts = {}) {
+    // Trending (opts.trending): Danbooru's own popularity ranking for
+    // today — order:rank is the site's "most popular" sort, and date:
+    // pins it to the current day (UTC, which is what Danbooru uses).
+    // Verified live 2026-11-15: order:rank + date: + rating:safe returns
+    // 200. The rating metatag still applies (see below), and the
+    // width:/height: server-side filter still applies — trending is not
+    // an excuse to show phone art on a PC filter.
+    const trending = !!opts.trending;
+    const tags = trending
+      ? `order:rank date:${new Date().toISOString().slice(0, 10)}`
+      : formatQueryFor("danbooru", q);
     const m = minRes();
     const p = purity();
     // Safe: rating:safe only. Mixed: safe OR questionable (comma = OR inside
@@ -332,12 +352,22 @@ const SOURCES = {
     // filtered locally — the newest posts are mostly portrait phone art, so
     // the filter could (and did) empty the whole result.
     const searchTags = baseTags + (m ? ` width:>=${m.w} height:>=${m.h}` : "");
+    // Best mode wants the highest-scored posts, not the newest: ask the
+    // server for order:score so the fetched pages ARE the top of the
+    // ranking instead of the newest 200 (whose scores the sort then has to
+    // rescue). Other modes keep the default newest-first order — Newest
+    // sort needs it, and Largest/Source don't care about score. A
+    // user-typed order: metatag wins over the automatic one.
+    const fetchTags = (sortMode() === "best" && !searchTags.includes("order:"))
+      ? searchTags + " order:score" : searchTags;
 
     // Best-effort exact count of posts hidden by the filter, from Danbooru's
     // counts endpoint (total matching posts minus total passing posts).
     // If it fails, results still work — the count just isn't shown.
     let hiddenPromise = null;
-    if (m) {
+    // Skipped for trending: counts of an order:rank query answer a
+    // question nobody asked (and would cost two extra requests per load).
+    if (m && !trending) {
       hiddenPromise = (async () => {
         const [{ data: all }, { data: pass }] = await Promise.all([
           fetchJson(`https://danbooru.donmai.us/counts/posts.json?tags=${encodeURIComponent(baseTags)}`, false),
@@ -351,15 +381,27 @@ const SOURCES = {
     let via = "";
     for (let page = 1; page <= BOORU_MAX_PAGES && out.length < BOORU_TARGET; page++) {
       const { data, via: v } = await fetchJson(
-        `https://danbooru.donmai.us/posts.json?tags=${encodeURIComponent(searchTags)}&limit=${BOORU_PAGE_SIZE}&page=${page}`, false);
+        `https://danbooru.donmai.us/posts.json?tags=${encodeURIComponent(fetchTags)}&limit=${BOORU_PAGE_SIZE}&page=${page}`, false);
       via = v;
       if (!Array.isArray(data) || data.length === 0) break;
       for (const p of data) {
         const full = pickBooruFile(p.file_url, p.large_file_url);
         if (!full) continue;
+        // Huge originals (multi-MB / very wide — a 98 MB file turned up in
+        // the top 200 for "catgirl") stall past the 15 s probe timeout or
+        // get cut off on slow links, and the card fails even though the
+        // ~850px sample would load in a second. Show the sample in the
+        // grid instead (displayFull); the Full image link still opens the
+        // original. The sample is also the first probe candidate, with the
+        // original as a fallback (see the card template).
+        const huge = (typeof p.file_size === "number" && p.file_size > 15 * 1024 * 1024)
+          || p.image_width > 6000;
+        const displayFull = huge && p.large_file_url && p.large_file_url !== full
+          ? p.large_file_url : null;
         out.push({
           thumb: p.preview_file_url || p.large_file_url || full,
           full,
+          displayFull,
           // If the original won't load (CDN block, rate-limit), fall back
           // through the smaller versions of the same post.
           alts: [p.large_file_url, p.preview_file_url].filter((u) => u && u !== full),
@@ -411,9 +453,14 @@ const SOURCES = {
         examined++; // count posts actually looked at, not pages fetched
         const full = pickBooruFile(p.file_url, p.sample_url);
         if (!full) continue;
+        // Same huge-file rule as Danbooru (Safebooru reports no file_size,
+        // so width is the only signal — its sample is the ~850px version).
+        const displayFull = p.width > 6000 && p.sample_url && p.sample_url !== full
+          ? p.sample_url : null;
         const item = {
           thumb: p.preview_url,
           full,
+          displayFull,
           // Same image, smaller: the ~850px sample, then the preview.
           alts: [p.sample_url, p.preview_url].filter((u) => u && u !== full),
           page: `https://safebooru.org/index.php?page=post&s=view&id=${p.id}`,
@@ -444,25 +491,38 @@ const SOURCES = {
     return out;
   },
 
-  async wallhaven(q) {
-    const params = wallhavenParams(q);
-    const { data, via } = await fetchJson(`https://wallhaven.cc/api/v1/search?${params}`, true);
-    const out = (data.data || []).map((w) => ({
-      thumb: w.thumbs.large,
-      full: w.path,
-      alts: [w.thumbs.large].filter((u) => u && u !== w.path),
-      page: w.url,
-      width: parseInt(w.resolution.split("x")[0], 10),
-      height: parseInt(w.resolution.split("x")[1], 10),
-      source: "Wallhaven",
-      date: w.created_at || null,
-      // `favorites` (users who saved it) over `views` (passive traffic):
-      // favorites is an active endorsement, and Wallhaven itself offers
-      // sorting=favorites. "code geass" sample (2026-11-15, relevance
-      // page): favorites median 12, max 44; views median 5,286.
-      score: w.favorites,
-      fileSize: typeof w.file_size === "number" ? w.file_size : null,
-    }));
+  async wallhaven(q, opts = {}) {
+    // One page is 24 results — with a ratio filter on, a page of mixed
+    // results can filter down to almost nothing client-side (the user's
+    // "catgirl" ultrawide search: 24 fetched, 0 ultrawide on page 1), so
+    // paginate until the target is met, and let the API pre-filter by
+    // ratio (see wallhavenParams) so every fetched page is usable.
+    const out = [];
+    let via = "";
+    for (let page = 1; page <= WALLHAVEN_MAX_PAGES && out.length < WALLHAVEN_TARGET; page++) {
+      const params = wallhavenParams(q, { page, trending: opts.trending });
+      const { data, via: v } = await fetchJson(`https://wallhaven.cc/api/v1/search?${params}`, true);
+      via = v;
+      const items = (data.data || []).map((w) => ({
+        thumb: w.thumbs.large,
+        full: w.path,
+        alts: [w.thumbs.large].filter((u) => u && u !== w.path),
+        page: w.url,
+        width: parseInt(w.resolution.split("x")[0], 10),
+        height: parseInt(w.resolution.split("x")[1], 10),
+        source: "Wallhaven",
+        date: w.created_at || null,
+        // `favorites` (users who saved it) over `views` (passive traffic):
+        // favorites is an active endorsement, and Wallhaven itself offers
+        // sorting=favorites. "code geass" sample (2026-11-15, relevance
+        // page): favorites median 12, max 44; views median 5,286.
+        score: w.favorites,
+        fileSize: typeof w.file_size === "number" ? w.file_size : null,
+      }));
+      out.push(...items);
+      if (!data.data || data.data.length < 24) break; // last page (24 per page)
+      if (out.length < WALLHAVEN_TARGET) await sleep(BOORU_PAGE_DELAY_MS);
+    }
     out.via = via;
     return out;
   },
@@ -476,10 +536,18 @@ const SOURCES = {
 // wiring is unit-testable (harness Group G). The `colors` param is only set
 // when a swatch is chosen — "" means no color filter, exactly like the API
 // with the parameter omitted.
-function wallhavenParams(q) {
+// opts.trending: the daily toplist instead of a query search —
+// sorting=toplist, topRange=1d, and NO q parameter (Wallhaven's API takes
+// q as optional; sending an empty one is harmless but pointless).
+// opts.page: which results page (search pagination, v5.4).
+function wallhavenParams(q, opts = {}) {
+  // Accept a bare page number too (wallhavenParams('cat', 2)) — the
+  // search tests call it that way; the app always passes an opts object.
+  if (typeof opts === "number") opts = { page: opts };
   const p = purity();
   const params = new URLSearchParams({
-    q: formatQueryFor("wallhaven", q), categories: "111", sorting: "relevance", order: "desc", page: "1",
+    categories: "111", order: "desc", page: String(opts.page || 1),
+    sorting: opts.trending ? "toplist" : "relevance",
     // Safe: sfw only (100). Mixed: sfw + sketchy (110) — works without an
     // API key, verified live 2026-11-15. NSFW: 001 — the API returns 0
     // results for anonymous requests (verified live 2026-11-15: total 0
@@ -489,6 +557,8 @@ function wallhavenParams(q) {
     // throws and the status pill explains why instead of showing 0.
     purity: p === "safe" ? "100" : p === "mixed" ? "110" : "001",
   });
+  if (opts.trending) params.set("topRange", "1d");
+  else params.set("q", formatQueryFor("wallhaven", q));
   const wc = wallColor();
   if (wc) params.set("colors", wc);
   if (p === "nsfw") {
@@ -499,8 +569,29 @@ function wallhavenParams(q) {
   }
   const m = minRes();
   if (m) params.set("atleast", `${m.w}x${m.h}`);
+  // Ratio filter on the server, not just the client: without it a page of
+  // mixed results can filter down to zero ultrawide/phone cards (verified
+  // live 2026-11-15: "catgirl" safe, atleast 3440x1440, page 1 of 24 had
+  // 0 ultrawide; with ratios=21x9 the API returned 2/2 ultrawide, and
+  // ratios=21x9,32x9 covers 3440x1440 and 5120x1440 alike). "PC landscape"
+  // is left to the client-side filter — it would need nearly every
+  // landscape bucket listed, and landscape is the majority anyway.
+  // NOT sent for trending: toplist+ratios returns 0 (verified live
+  // 2026-11-15 — toplist+atleast alone returns 40), so trending relies on
+  // the client-side ratio filter for that part.
+  if (!opts.trending) {
+    const ratio = deviceRatio();
+    if (ratio === "ultrawide") params.set("ratios", "21x9,32x9");
+    else if (ratio === "phone") params.set("ratios", "9x16,10x16,9x18");
+  }
   return params;
 }
+
+// Wallhaven pagination: 24 results per page, two pages max (48) — enough
+// for the ratio/min-res filters to have something to work with, without
+// turning one search into a crawl.
+const WALLHAVEN_TARGET = 48;
+const WALLHAVEN_MAX_PAGES = 2;
 
 // --- Sorting ---
 // The last fetched result set is kept in memory so changing the sort order
@@ -604,8 +695,13 @@ function sortResults(list) {
   }
   if (mode === "newest") {
     // Dated items first, newest first; dateless items after them, in arrival order.
+    // Epoch ms computed ONCE per item, not per comparison: Date.parse inside
+    // the comparator ran ~7,000 times for a 400-item sort (same class of
+    // waste the v5.3 optimizer removed from Best's rank — measured in node:
+    // 0.82 ms -> 0.40 ms per 400-item sort).
+    const msByItem = new Map(list.map((r) => [r, dateMs(r)]));
     return [...list].sort((a, b) => {
-      const da = dateMs(a), db = dateMs(b);
+      const da = msByItem.get(a), db = msByItem.get(b);
       if (Number.isNaN(da) && Number.isNaN(db)) return 0;
       if (Number.isNaN(da)) return 1;
       if (Number.isNaN(db)) return -1;
@@ -702,9 +798,12 @@ function releaseProbeSlot() {
 }
 
 // Probe one URL: loads it into the browser cache (no cache-buster, so the
-// later <img> swap reuses it). Calls done(true) on load, done(false) on
-// error OR on timeout (a stalled download counts as failed). One retry
-// after retryDelayMs — but only for a quick error, not for a timeout: a
+// later <img> swap reuses it). Calls done(true) on load, done(false, reason)
+// on error OR on timeout (a stalled download counts as failed) — reason is
+// "timeout" when the 15 s budget ran out, "error" when the load failed fast
+// (blocked, 404, network); the card's placeholder shows it, so a giant
+// file that stalls reads differently from a host that blocks this browser.
+// One retry after retryDelayMs — but only for a quick error, not for a timeout: a
 // file that already stalled for the full budget once would just occupy a
 // probe slot (and one of the browser's six connections) for another 15 s.
 // Holds one of maxParallelProbes global slots while it runs. Returns a
@@ -738,7 +837,7 @@ function probeUrl(url, done) {
       return;
     }
     releaseSlot();
-    done(false);
+    done(false, timedOut ? "timeout" : "error");
   };
   const attempt = () => {
     if (cancelled) return;
@@ -770,19 +869,44 @@ function probeUrl(url, done) {
 // Total failure: show a fixed-height placeholder of the SAME reserved size
 // (the anchor keeps its aspect-ratio, the img stays in the layout box but
 // hidden, so nothing moves and nothing disappears). The card's links keep
-// working; the user can still open the source page.
-function markImageFailed(img) {
+// working; the user can still open the source page. `reason` ("timeout" /
+// "error", from the probe — see probeUrl) is shown under the message so a
+// stalled giant file reads differently from a blocked host, and the Retry
+// button in the card's link row is unhidden (thumb-only cards have nothing
+// to retry — their thumbnail IS the image — so theirs stays hidden).
+function failReasonText(reason) {
+  return reason === "timeout"
+    ? "Timed out after 15 s — the file may be very large"
+    : "Couldn't load — blocked or missing on this connection";
+}
+function markImageFailed(img, reason) {
   img.dataset.state = "failed";
+  img.dataset.failReason = reason || "error";
   img.style.visibility = "hidden";
+  // Remember the alt for a later retry: blanking it keeps a failed <img>
+  // from rendering its alt text over the badges, but a card that recovers
+  // via Retry should get its description back (see restoreImgAlt in
+  // loadFullImage). Only the first failure saves it — a second failure
+  // must not overwrite the saved text with "".
+  if (img._prevAlt === undefined) img._prevAlt = img.getAttribute("alt") || "";
   img.alt = ""; // a failed <img> would otherwise render its alt text over the badges
   const anchor = img.closest("a.thumb");
-  if (anchor && !anchor.querySelector(".img-placeholder")) {
-    const ph = document.createElement("div");
-    ph.className = "img-placeholder";
-    ph.setAttribute("aria-hidden", "true");
-    ph.innerHTML = `<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 18l4.5-4.5 3.5 3.5 3-3L20 19"/><line x1="4" y1="4" x2="20" y2="20"/></svg><span>Image couldn't load</span>`;
-    anchor.appendChild(ph);
+  if (anchor) {
+    let ph = anchor.querySelector(".img-placeholder");
+    if (!ph) {
+      ph = document.createElement("div");
+      ph.className = "img-placeholder";
+      ph.setAttribute("aria-hidden", "true");
+      anchor.appendChild(ph);
+    }
+    // (Re)build the content: a retry that fails again must show the new
+    // reason, not the stale one from the first failure.
+    ph.hidden = false;
+    ph.innerHTML = `<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 18l4.5-4.5 3.5 3.5 3-3L20 19"/><line x1="4" y1="4" x2="20" y2="20"/></svg><span>Image couldn't load</span><span class="img-fail-reason">${escapeHtml(failReasonText(reason))}</span>`;
   }
+  const card = img.closest(".card");
+  const retry = card && card.querySelector('[data-action="retry-img"]');
+  if (retry && !img.dataset.thumbOnly) retry.style.display = "";
 }
 
 // A card image finished loading, so the browser knows its true size.
@@ -810,6 +934,11 @@ function imgLoaded(img) {
 // re-render rebuilds every card, so without this every sort/ratio change
 // would re-probe ~200 multi-MB images. The img's own onerror is the
 // backstop if a cached verdict goes stale (see imgThumbError).
+// Capped: a long session with many searches would otherwise grow this Set
+// without bound (~200 entries per search). Past the cap the OLDEST verdict
+// is evicted (Sets keep insertion order) and re-probed once if needed —
+// one probe beats unbounded memory.
+const PROBED_URLS_CAP = 2000;
 const probedFullUrls = new Set();
 
 // --- Preload ---
@@ -837,9 +966,23 @@ const probedFullUrls = new Set();
 // it would see a small fraction of the bytes, and the browser's Resource
 // Timing sizes are zeroed for cross-origin images without
 // Timing-Allow-Origin, which these CDNs don't send.
-const PRELOAD_DEFAULT = 1073741824; // 1 GB
-const PRELOAD_VALUES = ["0", "536870912", "1073741824", "2147483648", "5368709120"];
+const GB = 1073741824;
+const PRELOAD_MAX_GB = 50; // clamp for a typed amount — 50 GB of eager
+// preloads is already far past useful, and it bounds a typo like 500
+const PRELOAD_DEFAULT = 1073741824; // 1 GB (bytes — the stored format)
+// Typed GB -> bytes: empty / 0 / negative / non-numeric = Off (0); above
+// the max clamps to it.
+function preloadGbToBytes(gb) {
+  if (!Number.isFinite(gb) || gb <= 0) return 0;
+  return Math.round(Math.min(gb, PRELOAD_MAX_GB) * GB);
+}
+// Stored bytes -> the GB string the input shows: up to 3 decimals,
+// trailing zeros trimmed, so 536870912 shows as "0.5" and 1073741824 as "1".
+function preloadBytesToGb(bytes) {
+  return String(Math.round((bytes / GB) * 1000) / 1000);
+}
 let preloadSpent = 0; // bytes charged to eager preloads, this search
+let preloadCount = 0; // wallpapers eagerly preloaded, this search
 let preloadQueue = []; // card <img>s in display order, rebuilt per render
 let preloadIndex = 0; // next queue entry to consider (only advances past an
 // item once its upgrade starts or it is skipped — so an item that doesn't
@@ -852,15 +995,27 @@ let preloadRunning = false;
 // #preload-meter and preloadTarget() reads #data-preload, and the pump
 // calls both ~3x per card — ~5 DOM queries per preloaded card, ~500 for
 // a full 100-card preload. Cache the elements once (lazily, so a missing
-// element is retried instead of cached as null); the select's VALUE is
+// element is retried instead of cached as null); the input's VALUE is
 // still read fresh every time, so changing it — or setting it directly,
 // as the harness does — always takes effect.
 let preloadElCache = null;
 let preloadMeterElCache = null;
+let preloadMeterTextCache = null;
+let preloadMeterFillCache = null;
 function preloadTarget() {
   if (!preloadElCache) preloadElCache = $("#data-preload");
-  const v = preloadElCache ? Number(preloadElCache.value) : 0;
-  return Number.isFinite(v) && v > 0 ? v : 0;
+  const gb = preloadElCache ? Number(preloadElCache.value) : NaN;
+  return preloadGbToBytes(gb);
+}
+
+// The preset chips under the input: the pressed one matches the input's
+// current amount. Compared numerically (the input is free text, so "1.0"
+// and "1" are the same amount, and a clamped "60" matches no chip).
+function updatePreloadPresets() {
+  const gb = preloadTarget() / GB;
+  $$(".preload-preset").forEach((b) => {
+    b.classList.toggle("active", Number(b.dataset.gb) === gb);
+  });
 }
 
 function preloadCost(r) {
@@ -881,10 +1036,21 @@ function updatePreloadMeter() {
   const el = preloadMeterElCache;
   if (!el) return;
   const target = preloadTarget();
-  if (!target) { el.textContent = "Preload off"; return; }
-  if (preloadRunning) { el.textContent = `Preloading ≈ ${fmtBytes(preloadSpent)} / ${fmtBytes(target)}…`; return; }
-  if (preloadSpent > 0) { el.textContent = `Preloaded ≈ ${fmtBytes(preloadSpent)}`; return; }
-  el.textContent = `Preload ${fmtBytes(target)}`;
+  // The meter is a live progress line only: it shows while a search is
+  // preloading toward a target the user set, and is hidden otherwise —
+  // Off, target reached, queue drained, Favorites view. (It used to
+  // persist a "Preloaded ≈ X" summary after the fact; that text is gone —
+  // the line exists to show loading in progress, not history.)
+  const show = preloadRunning && target > 0;
+  el.hidden = !show;
+  if (!show) return;
+  if (!preloadMeterTextCache) preloadMeterTextCache = el.querySelector(".preload-meter-text");
+  if (!preloadMeterFillCache) preloadMeterFillCache = el.querySelector(".preload-meter-fill");
+  const text = preloadMeterTextCache || el;
+  text.textContent = `Preloading… ${preloadCount} wallpaper${preloadCount === 1 ? "" : "s"} · ${fmtBytes(preloadSpent)} / ${fmtBytes(target)}`;
+  if (preloadMeterFillCache) {
+    preloadMeterFillCache.style.width = `${Math.min(100, (preloadSpent / target) * 100).toFixed(1)}%`;
+  }
 }
 
 // One eager upgrade at a time, in display order, until the target is
@@ -920,6 +1086,7 @@ function pumpPreload() {
     preloadInFlight = false;
     if (status === "downloaded") {
       preloadSpent += cost;
+      preloadCount++;
       updatePreloadMeter();
     }
     queueMicrotask(pumpPreload);
@@ -974,6 +1141,7 @@ function loadFullImage(img, onDone) {
   if (probedFullUrls.has(img.dataset.full)) {
     img.src = img.dataset.full;
     img.style.visibility = "";
+    restoreImgAlt(img);
     img.dataset.state = "full";
     done("cached");
     return;
@@ -981,6 +1149,7 @@ function loadFullImage(img, onDone) {
   let i = 0;
   let dead = false;
   let cancelProbe = null;
+  let lastFailReason = "error"; // what the last probe reported (see probeUrl)
   // Abort the in-flight probe (and stop the chain) when the card is
   // discarded — e.g. a new search or a filter change rebuilds the grid.
   // Without this, a stalled probe keeps downloading a multi-MB file for an
@@ -995,26 +1164,40 @@ function loadFullImage(img, onDone) {
     // (dead), but if the img was detached some other way the pump's onDone
     // must still fire exactly once or the pump stalls forever.
     if (dead || !img.isConnected) { done("failed"); return; }
-    if (i >= candidates.length) { markImageFailed(img); done("failed"); return; }
+    if (i >= candidates.length) { markImageFailed(img, lastFailReason); done("failed"); return; }
     const url = candidates[i++];
-    cancelProbe = probeUrl(url, (ok) => {
+    cancelProbe = probeUrl(url, (ok, reason) => {
       cancelProbe = null;
       // The card is gone — normally _cancelUpgrade already fired done()
       // (dead), but if the img was detached some other way the pump's
       // onDone must still fire exactly once or the pump stalls forever.
       if (dead || !img.isConnected) { done("failed"); return; }
       if (ok) {
+        // Cap the cache (see above): evict the oldest verdict when full.
+        if (probedFullUrls.size >= PROBED_URLS_CAP) probedFullUrls.delete(probedFullUrls.values().next().value);
         probedFullUrls.add(url);
         img.src = url;
         img.style.visibility = "";
+        restoreImgAlt(img);
         img.dataset.state = "full";
         done("downloaded");
       } else {
+        lastFailReason = reason || "error";
         tryNext();
       }
     });
   };
   tryNext();
+}
+
+// Restore the alt text markImageFailed blanked, once a retried card
+// recovers. Sets both the property and the attribute: real browsers
+// reflect one into the other, the test shim does not.
+function restoreImgAlt(img) {
+  if (img._prevAlt === undefined) return;
+  img.setAttribute("alt", img._prevAlt);
+  img.alt = img._prevAlt;
+  img._prevAlt = undefined;
 }
 
 // The thumbnail itself failed (its host blocks this browser, or it 404s).
@@ -1025,18 +1208,18 @@ function imgThumbError(img) {
   if (img.dataset.state === "failed") return;
   // Thumb-only card (Wallpapers.com): there is no cheap fallback to try, so
   // a failed thumbnail is already a total failure.
-  if (img.dataset.thumbOnly) { markImageFailed(img); return; }
+  if (img.dataset.thumbOnly) { markImageFailed(img, "error"); return; }
   // The visible image IS the full-res one (its probe already succeeded, or
   // the thumb is the full image — WallpaperCave) and it just errored:
   // there is nothing left to try. Show the placeholder instead of leaving
   // a hidden card with no explanation.
-  if (img.dataset.state === "full") { markImageFailed(img); return; }
+  if (img.dataset.state === "full") { markImageFailed(img, "error"); return; }
   // Single candidate and the thumb already IS it (WallpaperCave, no alts):
   // the upgrade would be a no-op, so a thumb error here is already a total
   // failure — don't hide the img and wait on a probe that returns instantly.
   const thumbAlts = (img.dataset.alts || "").split("|").filter(Boolean);
   if (img.getAttribute("src") === img.dataset.full && thumbAlts.length === 0) {
-    markImageFailed(img);
+    markImageFailed(img, "error");
     return;
   }
   img.style.visibility = "hidden";
@@ -1104,6 +1287,7 @@ function favSnapshot(r) {
     date: r.date || null,
     score: typeof r.score === "number" ? r.score : null,
     thumbOnly: !!r.thumbOnly,
+    displayFull: r.displayFull || null,
     fileSize: typeof r.fileSize === "number" ? r.fileSize : null,
   };
 }
@@ -1139,6 +1323,7 @@ function setFavsView(on) {
 
 function renderFavsView() {
   setFavsView(true);
+  setTrendingView(false);
   // Favorites render in the current sort order (they carry date/score, so
   // Best/Newest/Largest all compose); unscored ones sort last in Best mode,
   // exactly like search results.
@@ -1157,6 +1342,7 @@ function renderFavsView() {
 let cardByPage = new Map();
 let lastRenderProxyUp = false;
 let lastRenderFavsView = false;
+let lastRenderTrendingView = false;
 
 // Discard every card currently on screen: abort its in-flight full-res
 // upgrade (otherwise the probe downloads to completion for an image that
@@ -1296,6 +1482,7 @@ function renderResults(results, reports, q) {
   // left behind by a skeleton/empty-state render harmless.)
   if (cardByPage.size === visible.length
       && localProxyUp === lastRenderProxyUp && favsView === lastRenderFavsView
+      && trendingView === lastRenderTrendingView
       && visible.every((r) => { const el = cardByPage.get(r.page); return el && el.isConnected; })) {
     for (const r of visible) box.appendChild(cardByPage.get(r.page));
     restartPreload(); // same cards, new order — preload follows the new order
@@ -1338,15 +1525,27 @@ function renderResults(results, reports, q) {
         ? `aspect-ratio:${r.ratioW} / ${r.ratioH}`
         : `aspect-ratio:4 / 3`;
     const thumbSrc = proxiedImageUrl(r.thumb);
+    // The full image the card LINKS to is always the original (the anchor
+    // href and the "Full image" link below). What the card DISPLAYS can be
+    // smaller: for huge originals the adapter sets displayFull to the
+    // ~850px sample, which loads in a second where a 17–98 MB original
+    // stalls past the probe timeout (see the Danbooru adapter). The
+    // original stays the first fallback candidate, so a blocked sample
+    // still tries it before the card fails.
+    const displayFull = r.displayFull || r.full;
     const fullUrl = proxiedImageUrl(r.full);
+    const displayUrl = proxiedImageUrl(displayFull);
     // What an upgrade of this card costs the preload meter (see preloadCost).
     const cost = preloadCost(r);
-    const alts = (r.alts || []).filter((u) => u && u !== r.full).map(proxiedImageUrl);
+    const alts = [
+      ...(displayFull !== r.full ? [r.full] : []),
+      ...(r.alts || []).filter((u) => u && u !== r.full && u !== displayFull),
+    ].map(proxiedImageUrl);
     // Favorite state read once per card, from the per-render Set above.
     const fav = favPages.has(r.page);
     return `
     <article class="card">
-      <a class="thumb" href="${fullUrl}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${thumbSrc}" data-full="${escapeHtml(fullUrl)}" data-alts="${escapeHtml(alts.join("|"))}"${r.thumbOnly ? ' data-thumb-only="1"' : ""} data-cost="${cost}" data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
+      <a class="thumb" href="${fullUrl}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${thumbSrc}" data-full="${escapeHtml(displayUrl)}" data-alts="${escapeHtml(alts.join("|"))}"${r.thumbOnly ? ' data-thumb-only="1"' : ""} data-cost="${cost}" data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
         <span class="badge badge-res">${res}</span>
         <span class="badge badge-src">${r.source}</span>
       </a>
@@ -1354,6 +1553,7 @@ function renderResults(results, reports, q) {
         <div class="links">
           <a href="${r.page}" target="_blank" rel="noopener">Source page ↗</a>
           <a class="full-link" href="${fullUrl}" target="_blank" rel="noopener">Full image ↗</a>
+          <button type="button" class="img-retry" data-action="retry-img" style="display:none">Retry</button>
           <button type="button" class="fav-btn${fav ? " fav-on" : ""}" data-action="toggle-fav" data-page="${escapeHtml(r.page)}" aria-pressed="${fav ? "true" : "false"}" aria-label="Save to favorites" title="Save to favorites">${fav ? "♥" : "♡"}</button>
         </div>
       </div>
@@ -1363,16 +1563,20 @@ function renderResults(results, reports, q) {
   // fires for the rest as the user scrolls). Without IntersectionObserver,
   // load everything immediately.
   const observer = getImageObserver();
-  box.querySelectorAll(".card img").forEach((img) => {
+  const imgs = box.querySelectorAll(".card img");
+  imgs.forEach((img) => {
     if (observer) observer.observe(img);
     else loadFullImage(img);
   });
   // Remember the rendered cards (in visible order) for the sort-only fast
-  // path above — and the proxy state / view they were rendered under.
-  const cards = box.querySelectorAll(".card");
+  // path above — and the proxy state / view they were rendered under. The
+  // cards come from the imgs just observed (one <img> per card, in document
+  // order) instead of a second querySelectorAll over the whole grid.
+  const cards = [...imgs].map((img) => img.closest(".card"));
   cardByPage = new Map(visible.map((r, i) => [r.page, cards[i]]));
   lastRenderProxyUp = localProxyUp;
   lastRenderFavsView = favsView;
+  lastRenderTrendingView = trendingView;
   restartPreload();
 }
 
@@ -1381,11 +1585,13 @@ async function search(ev) {
   saveSettings();
   const q = $("#query").value.trim();
   if (!q) return;
-  // A new search shows search results, not the Favorites view.
+  // A new search shows search results, not the Favorites or Trending view.
   setFavsView(false);
+  setTrendingView(false);
   // New search session: the preload meter starts over (bytes already
   // downloaded stay downloaded — the meter counts this search's preloads).
   preloadSpent = 0;
+  preloadCount = 0;
   updatePreloadMeter();
   renderSiteLinks(q);
 
@@ -1419,38 +1625,7 @@ async function search(ev) {
       // When the local proxy is down, a public-proxy via is labelled as
       // such ("via corsfix — public proxy") so it doesn't read like the
       // healthy local-proxy path.
-      const via = items.via || "";
-      const PUBLIC_VIAS = ["corsfix", "allorigins", "allorigins (json)", "cors.lol"];
-      const viaLabel = via
-        ? ` (via ${via}${!localProxyUp && PUBLIC_VIAS.includes(via) ? " — public proxy" : ""})`
-        : "";
-      let msg = `${passing.length} found${viaLabel}`;
-      if (name === "wallhaven" && wallColor()) msg += ` · color #${wallColor()}`;
-      // In Mixed mode, say what each source actually includes: Danbooru and
-      // Wallhaven filter by rating/purity; Safebooru is a safe-only site;
-      // the scraped sites have no purity filter at all. In Safe mode the
-      // pills read exactly as before.
-      if (purity() === "mixed") {
-        if (name === "danbooru" || name === "wallhaven") msg += " · incl. suggestive";
-        else if (name === "safebooru") msg += " · safe-only site";
-        else msg += " · no purity filter";
-      } else if (purity() === "nsfw") {
-        // NSFW mode: Danbooru returns explicit posts; Wallhaven only works
-        // with an API key (the adapter throws without one, so reaching here
-        // means a key was set); Safebooru returns nothing by design; the
-        // scraped sites have no purity filter at all.
-        if (name === "danbooru") msg += " · explicit only";
-        else if (name === "wallhaven") msg += " · NSFW (API key set)";
-        else if (name === "safebooru") msg += " · no NSFW here — safe-only site";
-        else msg += " · no purity filter";
-      }
-      const hidden = items.hidden || 0;
-      if (hidden > 0 && m) {
-        msg += ` · ${hidden.toLocaleString()} below ${m.w}×${m.h}` +
-          (items.hiddenScope === "checked" ? ` (of ${items.examined || 0} checked)` : "") +
-          ` — lower the filter to see them`;
-      }
-      reports.push([name, msg, true, hidden]);
+      reports.push(sourceReport(name, items, passing));
     } catch (err) {
       reports.push([name, err, false, 0]);
     }
@@ -1469,42 +1644,91 @@ $("#purity").addEventListener("change", saveSettings);
 $("#wh-key").addEventListener("change", saveSettings);
 $("#sort").addEventListener("change", () => {
   if (favsView) renderFavsView();
+  else if (trendingView) renderTrendingView();
   else if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
 });
 $("#device-ratio").addEventListener("change", () => {
   saveSettings();
   if (favsView) renderFavsView();
+  else if (trendingView) renderTrendingView();
   else if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
 });
 const limitEl = $("#limit");
 if (limitEl) limitEl.addEventListener("change", () => {
   saveSettings();
   if (favsView) renderFavsView();
+  else if (trendingView) renderTrendingView();
   else if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
 });
 const preloadEl = $("#data-preload");
-if (preloadEl) preloadEl.addEventListener("change", () => {
+if (preloadEl) {
+  // "input" so the meter and the pump follow while typing (a half-typed
+  // "2." still parses as 2 GB; clearing the field means Off until a new
+  // number lands); "change" covers Enter/blur the same way.
+  const onPreloadInput = () => {
+    saveSettings();
+    updatePreloadPresets();
+    updatePreloadMeter();
+    pumpPreload(); // raising the target resumes a stopped chain; lowering
+    // it stops the pump at its next check (already-spent bytes stay spent)
+  };
+  preloadEl.addEventListener("input", onPreloadInput);
+  preloadEl.addEventListener("change", onPreloadInput);
+}
+// Preset chips fill the input (and persist + resume the pump, like typing).
+$$(".preload-preset").forEach((b) => b.addEventListener("click", () => {
+  const el = $("#data-preload");
+  if (!el) return;
+  el.value = b.dataset.gb || "0";
   saveSettings();
+  updatePreloadPresets();
   updatePreloadMeter();
-  pumpPreload(); // raising the target resumes a stopped chain; lowering it
-  // stops the pump at its next check (already-spent bytes stay spent)
-});
+  pumpPreload();
+}));
 // Color swatches: persist the choice (and the pressed state) immediately;
 // it applies to Wallhaven on the next search, like the Content select.
 // No auto re-search — same as changing purity.
 $$(".swatch").forEach((b) => b.addEventListener("click", () => setWallColor(b.dataset.color || "")));
 // Favorites toggle: show only saved favorites (in the current sort order),
-// or go back to the last search results (or the idle state if none yet).
+// or go back to where the toggle came from — the Trending view if that's
+// where the user was, otherwise the last search results (or the idle state
+// if none yet).
 const favsToggleBtn = $("#favs-toggle");
 if (favsToggleBtn) favsToggleBtn.addEventListener("click", () => {
   if (favsView) {
     setFavsView(false);
-    if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
+    if (viewBeforeFavs === "trending" && lastTrendingReports.length) renderTrendingView();
+    else if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
     else { discardRenderedCards(); $("#results").innerHTML = idleResultsHtml; }
   } else {
+    viewBeforeFavs = trendingView ? "trending" : "search";
     renderFavsView();
   }
 });
+
+// Tabs: Search shows the last search (or the idle state); Trending loads
+// what's popular now (from memory on repeat visits, fresh on ↻).
+const tabSearchBtn = $("#tab-search");
+if (tabSearchBtn) tabSearchBtn.addEventListener("click", () => {
+  setTrendingView(false);
+  setFavsView(false);
+  if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
+  else { discardRenderedCards(); $("#results").innerHTML = idleResultsHtml; }
+});
+const tabTrendingBtn = $("#tab-trending");
+if (tabTrendingBtn) tabTrendingBtn.addEventListener("click", () => loadTrending(false));
+const trendingRefreshBtn = $("#trending-refresh");
+if (trendingRefreshBtn) trendingRefreshBtn.addEventListener("click", () => loadTrending(true));
+// Popular-search chips: run that term as a normal search — back to the
+// Search tab, the term in the box, submitted.
+$$(".trend-chip").forEach((b) => b.addEventListener("click", () => {
+  const q = b.dataset.query || "";
+  if (!q) return;
+  setTrendingView(false);
+  setFavsView(false);
+  $("#query").value = q;
+  $("#search-form").requestSubmit();
+}));
 // Banner action: re-probe the local proxy (e.g. after starting start.sh)
 // and hide the banner if it's up now. If the proxy just came up and cards
 // are already on screen, re-render so their image URLs get the proxy route
@@ -1517,13 +1741,176 @@ if (recheckBtn) recheckBtn.addEventListener("click", async () => {
   await updateProxyStatus();
   if (!wasUp && localProxyUp && lastReports.length) {
     if (favsView) renderFavsView();
+    else if (trendingView) renderTrendingView();
     else renderResults(lastResults, lastReports, lastQuery);
   }
 });
-// Heart buttons (delegated) + empty-state actions: drop the device/ratio
-// filter and re-render from memory, or drop the min-resolution filter and
-// search again.
+
+// One status-pill line per source, shared by search() and loadTrending():
+// same wording, same hidden-count note, same purity suffixes — a trending
+// pill must read exactly like a search pill for the same source.
+// `via` comes from the items themselves (per-call), never a shared global
+// — parallel fetches used to overwrite each other's label. When the local
+// proxy is down, a public-proxy via is labelled as such ("via corsfix —
+// public proxy") so it doesn't read like the healthy local-proxy path.
+function sourceReport(name, items, passing) {
+  const via = items.via || "";
+  const PUBLIC_VIAS = ["corsfix", "allorigins", "allorigins (json)", "cors.lol"];
+  const viaLabel = via
+    ? ` (via ${via}${!localProxyUp && PUBLIC_VIAS.includes(via) ? " — public proxy" : ""})`
+    : "";
+  let msg;
+  if (items.empty && passing.length === 0) {
+    // The site answered with a genuine empty page (Wallpapers.com for
+    // "catgirl" — verified live: HTTP 200, empty grid). That is not a
+    // failure, so it gets a green "0 found" pill saying so, not the
+    // red "no results parsed" one. A real fetch/parse failure still
+    // throws in the adapter and lands in the red pill below.
+    // No purity/hidden suffixes here — they would only muddy the point.
+    msg = `0 found — nothing here for this query${viaLabel}`;
+  } else {
+    msg = `${passing.length} found${viaLabel}`;
+    if (name === "wallhaven" && wallColor()) msg += ` · color #${wallColor()}`;
+    // In Mixed mode, say what each source actually includes: Danbooru and
+    // Wallhaven filter by rating/purity; Safebooru is a safe-only site;
+    // the scraped sites have no purity filter at all. In Safe mode the
+    // pills read exactly as before.
+    if (purity() === "mixed") {
+      if (name === "danbooru" || name === "wallhaven") msg += " · incl. suggestive";
+      else if (name === "safebooru") msg += " · safe-only site";
+      else msg += " · no purity filter";
+    } else if (purity() === "nsfw") {
+      // NSFW mode: Danbooru returns explicit posts; Wallhaven only works
+      // with an API key (the adapter throws without one, so reaching here
+      // means a key was set); Safebooru returns nothing by design; the
+      // scraped sites have no purity filter at all.
+      if (name === "danbooru") msg += " · explicit only";
+      else if (name === "wallhaven") msg += " · NSFW (API key set)";
+      else if (name === "safebooru") msg += " · no NSFW here — safe-only site";
+      else msg += " · no purity filter";
+    }
+  }
+  const hidden = items.hidden || 0;
+  const m = minRes();
+  if (hidden > 0 && m) {
+    msg += ` · ${hidden.toLocaleString()} below ${m.w}×${m.h}` +
+      (items.hiddenScope === "checked" ? ` (of ${items.examined || 0} checked)` : "") +
+      ` — lower the filter to see them`;
+  }
+  return [name, msg, true, hidden];
+}
+
+// --- Trending ---
+// The Trending tab shows what's popular right now, no query needed:
+// Wallhaven's daily toplist (sorting=toplist, topRange=1d) and Danbooru's
+// most popular posts today (order:rank + today's date). Only those two:
+// Safebooru has no popularity endpoint, and AlphaCoders' top page is four
+// featured items with no dimensions — not a real feed (checked live
+// 2026-11-15). The scraped sites have no trending listing either.
+// The same filters as search apply — Content mode and the server-side
+// min-resolution filter are inside the adapters (purity(), minRes(),
+// wallhavenParams), the device/ratio filter and the result limit run in
+// renderResults(), and the source checkboxes are respected (an unchecked
+// Wallhaven/Danbooru is skipped). Favorites work on trending cards exactly
+// like search cards (same renderResults + renderedByPage).
+// Like search, the last fetched set is kept in memory so sort/ratio
+// changes re-render without re-fetching; the ↻ button forces a fresh load.
+const TRENDING_SOURCES = ["wallhaven", "danbooru"];
+let trendingView = false;
+let trendingLoading = false;
+let lastTrendingResults = [];
+let lastTrendingReports = [];
+// Which view the Favorites toggle came from ("search" or "trending"), so
+// toggling back restores it instead of always landing on the last search.
+let viewBeforeFavs = "search";
+
+function setTrendingView(on) {
+  trendingView = on;
+  const s = $("#tab-search"), t = $("#tab-trending");
+  if (s) { s.classList.toggle("active", !on); s.setAttribute("aria-selected", !on ? "true" : "false"); }
+  if (t) { t.classList.toggle("active", on); t.setAttribute("aria-selected", on ? "true" : "false"); }
+  const panel = $("#trending-panel");
+  if (panel) panel.hidden = !on;
+}
+
+function renderTrendingView() {
+  setTrendingView(true);
+  setFavsView(false);
+  renderResults(lastTrendingResults, lastTrendingReports, "Trending");
+}
+
+async function loadTrending(force) {
+  setTrendingView(true);
+  setFavsView(false);
+  // Already loaded and not forced: re-render from memory, no re-fetch
+  // (same as switching back to a previous search).
+  if (!force && lastTrendingReports.length) { renderTrendingView(); return; }
+  if (trendingLoading) return;
+  trendingLoading = true;
+  // New session: the preload meter starts over (bytes already downloaded
+  // stay downloaded — the meter counts this view's preloads).
+  preloadSpent = 0;
+  preloadCount = 0;
+  updatePreloadMeter();
+
+  const chosen = $$(".source:checked").map((c) => c.value).filter((n) => TRENDING_SOURCES.includes(n));
+  $("#status").innerHTML = `<span class="status-pill pill-busy"><span class="spinner"></span>Loading what's trending…</span>`;
+  // The skeletons replace the cards — discard their in-flight upgrades
+  // first (see discardRenderedCards), or an orphaned probe stalls the
+  // preload pump and keeps downloading for a card that is already gone.
+  discardRenderedCards();
+  $("#results").innerHTML = Array.from({ length: 8 }, () =>
+    `<div class="skeleton" aria-hidden="true"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>`).join("");
+  cardByPage = new Map();
+
+  const reports = [];
+  const all = [];
+  if (!chosen.length) {
+    reports.push(["Trending", "no trending sources selected — enable Wallhaven or Danbooru in Sources", true, 0]);
+  } else {
+    await Promise.all(chosen.map(async (name) => {
+      try {
+        const items = await SOURCES[name](null, { trending: true });
+        // minRes read once per source, not once per item (same as search()).
+        const m = minRes();
+        const passing = items.filter((r) => passesMinRes(r, m));
+        all.push(...passing);
+        reports.push(sourceReport(name, items, passing));
+      } catch (err) {
+        reports.push([name, err, false, 0]);
+      }
+    }));
+  }
+  lastTrendingResults = all;
+  lastTrendingReports = reports;
+  trendingLoading = false;
+  renderResults(all, reports, "Trending");
+}
+
+// Heart buttons (delegated) + retry buttons + empty-state actions: drop
+// the device/ratio filter and re-render from memory, or drop the
+// min-resolution filter and search again.
 $("#results").addEventListener("click", (ev) => {
+  const retryBtn = ev.target.closest('[data-action="retry-img"]');
+  if (retryBtn) {
+    // Retry a failed card from scratch: hide the placeholder, clear the
+    // upgrade state, and probe the candidates again (the sample first for
+    // huge files, then the original — see loadFullImage). The img stays
+    // hidden until a probe succeeds, which unhides it; a second failure
+    // re-marks it with the new reason. Thumb-only cards never show this
+    // button (there is nothing to retry — see markImageFailed).
+    const card = retryBtn.closest(".card");
+    const img = card && card.querySelector("img");
+    if (!img) return;
+    const ph = img.closest("a.thumb") && img.closest("a.thumb").querySelector(".img-placeholder");
+    if (ph) ph.hidden = true;
+    img.dataset.upgradeStarted = "";
+    img.dataset.state = "thumb";
+    img.dataset.failReason = "";
+    retryBtn.style.display = "none";
+    loadFullImage(img);
+    return;
+  }
   const favBtn = ev.target.closest('[data-action="toggle-fav"]');
   if (favBtn) {
     const item = renderedByPage.get(favBtn.dataset.page);
@@ -1543,12 +1930,16 @@ $("#results").addEventListener("click", (ev) => {
     $("#device-ratio").value = "all";
     saveSettings();
     if (favsView) renderFavsView();
+    else if (trendingView) renderTrendingView();
     else renderResults(lastResults, lastReports, lastQuery);
     return;
   }
   if (!ev.target.closest('[data-action="clear-res"]')) return;
   $("#min-res").value = "0";
-  $("#search-form").requestSubmit();
+  // In the Trending view there is no search to re-run — reload trending
+  // with the loosened filter instead.
+  if (trendingView) loadTrending(true);
+  else $("#search-form").requestSubmit();
 });
 loadSettings();
 const idleResultsHtml = $("#results").innerHTML;

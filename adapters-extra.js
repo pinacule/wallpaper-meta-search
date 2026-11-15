@@ -27,8 +27,15 @@ async function fetchHtml(url) {
   return { text, via };
 }
 
-const absUrl = (base, rel) => new URL(rel, base).href;
-const cap40 = (arr) => arr.slice(0, 40);
+// Root-relative hrefs ("/wallpapers/x.html") are every call site's input
+// — all scraped hrefs start with a slash. Plain concatenation gives exactly
+// what new URL(rel, base) returns for those, without the parser (~0.30 ms
+// per search saved across ~240 calls, measured in node). Anything else
+// (absolute URL, or a rel with characters the parser would percent-encode)
+// falls back to URL parsing, so behaviour is identical.
+const absUrl = (base, rel) =>
+  (rel.startsWith("/") && !/[\s<>"]/.test(rel) ? base + rel : new URL(rel, base).href);
+const cap80 = (arr) => arr.slice(0, 80);
 
 function dedupe(items) {
   const seen = new Set();
@@ -39,12 +46,48 @@ function dedupe(items) {
   });
 }
 
-// Parse a WallpaperCave category page into up to 40 items (deduped).
+// Parse one Wallpapers.com listing page into items (shared by page 1 and
+// the ?p=2 follow-up — see wallpapersdotcom below).
+function parseWallpapersCom(html) {
+  const out = [];
+  const re = /<a[^>]+href="(\/wallpapers\/[^"]+\.html)"[^>]*>([\s\S]*?)<\/a>/g;
+  let m;
+  while ((m = re.exec(html)) && out.length < 80) {
+    const inner = /(?:data-src|src)="(https:\/\/wallpapers\.com\/images\/thumbnail\/[^"]+)"/.exec(m[2]);
+    if (!inner) continue;
+    const thumb300 = inner[1];
+    const high = /https:\/\/wallpapers\.com\/images\/high\/[^" ]+\.jpg/.exec(m[2]);
+    const thumb = high ? high[0] : thumb300;
+    const dims = /width="(\d+)"\s*height="(\d+)"/.exec(m[2]);
+    out.push({
+      thumb,
+      full: thumb300.replace("/images/thumbnail/", "/images/hd/"),
+      // Fallback: the thumbnail itself, if the /images/hd/ file won't load.
+      alts: [thumb],
+      // The /images/hd/ files are multi-MB and their CDN stalls past the
+      // probe timeout on some connections; a card only needs the 900 px
+      // thumbnail (the full file is still one click away). See thumbOnly in
+      // app.js loadFullImage.
+      thumbOnly: true,
+      page: absUrl("https://wallpapers.com", m[1]),
+      width: 0, height: 0,
+      ratioW: dims ? parseInt(dims[1], 10) : 0,
+      ratioH: dims ? parseInt(dims[2], 10) : 0,
+      source: "Wallpapers.com",
+      date: null, // search pages show no date — dateless in Newest sort
+      score: null, // no popularity number on the page — unscored in Best sort
+    });
+  }
+  return out;
+}
+
+// Parse a WallpaperCave category page into up to 50 items (deduped) —
+// the page holds 50, and there is no pagination link to follow.
 function parseWallpaperCaveCategory(html) {
   const out = [];
   const re = /<a href="(\/w\/[^"]+)" class="wpinkw">[\s\S]*?<img src="(\/wp\/[^"]+)" width="(\d+)" height="(\d+)"/g;
   let m;
-  while ((m = re.exec(html)) && out.length < 40) {
+  while ((m = re.exec(html)) && out.length < 50) {
     out.push({
       thumb: absUrl("https://wallpapercave.com", m[2]),
       full: absUrl("https://wallpapercave.com", m[2]),
@@ -58,7 +101,36 @@ function parseWallpaperCaveCategory(html) {
       score: null, // no popularity number on the page — unscored in Best sort
     });
   }
-  return cap40(dedupe(out));
+  return dedupe(out).slice(0, 50);
+}
+
+// Parse one Zerochan search/tag page into `out` (shared by page 1 and
+// the tag page's ?p=2 — see zerochan below).
+function parseZerochanPage(html, out) {
+  const liRe = /<li[^>]+data-id="(\d+)"[^>]*>([\s\S]*?)<\/li>/g;
+  let m;
+  while ((m = liRe.exec(html)) && out.length < 80) {
+    const id = m[1];
+    const block = m[2];
+    const thumb = /(?:data-src|src)="(https:\/\/s3\.zerochan\.net\/240\/[^"]+)"/.exec(block);
+    const full = /href="(https:\/\/static\.zerochan\.net\/[^"]+\.full\.\d+\.\w+)"/.exec(block);
+    if (!thumb || !full) continue;
+    const res = /title="(\d+)&#10005;(\d+)/.exec(block);
+    out.push({
+      thumb: thumb[1],
+      full: full[1],
+      // Fallback: the 240px thumb from s3 — a different host than the
+      // full image, so a block on one doesn't necessarily kill the other.
+      alts: [thumb[1]],
+      page: `https://www.zerochan.net/${id}`,
+      width: res ? parseInt(res[1], 10) : 0,
+      height: res ? parseInt(res[2], 10) : 0,
+      source: "Zerochan",
+      date: null, // search pages show no date — dateless in Newest sort
+      score: null, // no popularity number on the page — unscored in Best sort
+    });
+  }
+  return out;
 }
 
 const EXTRA_SOURCES = {
@@ -76,40 +148,39 @@ const EXTRA_SOURCES = {
   async wallpapersdotcom(q) {
     q = formatQueryFor("wallpapersdotcom", q);
     const { text: html, via } = await fetchHtml(`https://wallpapers.com/search/${encodeURIComponent(q)}`);
-    const out = [];
-    const re = /<a[^>]+href="(\/wallpapers\/[^"]+\.html)"[^>]*>([\s\S]*?)<\/a>/g;
-    let m;
-    while ((m = re.exec(html)) && out.length < 40) {
-      const inner = /(?:data-src|src)="(https:\/\/wallpapers\.com\/images\/thumbnail\/[^"]+)"/.exec(m[2]);
-      if (!inner) continue;
-      const thumb300 = inner[1];
-      const high = /https:\/\/wallpapers\.com\/images\/high\/[^" ]+\.jpg/.exec(m[2]);
-      const thumb = high ? high[0] : thumb300;
-      const dims = /width="(\d+)"\s*height="(\d+)"/.exec(m[2]);
-      out.push({
-        thumb,
-        full: thumb300.replace("/images/thumbnail/", "/images/hd/"),
-        // Fallback: the thumbnail itself, if the /images/hd/ file won't load.
-        alts: [thumb],
-        // The /images/hd/ files are multi-MB and their CDN stalls past the
-        // probe timeout on some connections; a card only needs the 900 px
-        // thumbnail (the full file is still one click away). See thumbOnly in
-        // app.js loadFullImage.
-        thumbOnly: true,
-        page: absUrl("https://wallpapers.com", m[1]),
-        width: 0, height: 0,
-        ratioW: dims ? parseInt(dims[1], 10) : 0,
-        ratioH: dims ? parseInt(dims[2], 10) : 0,
-        source: "Wallpapers.com",
-        date: null, // search pages show no date — dateless in Newest sort
-        score: null, // no popularity number on the page — unscored in Best sort
-      });
+    const out = parseWallpapersCom(html);
+    // Second page: the listing paginates on its own slug URL (?p=2, e.g.
+    // /code-geass?p=2 — verified live: the paginator links there, while
+    // ?p=2 on /search itself is ignored and returns page 1 again). The
+    // page-1 HTML carries the link, so follow it when present; a failed
+    // page-2 fetch just leaves the page-1 results standing.
+    if (out.length) {
+      const pg2 = /href="(\/[^"?]+\?p=2)"/.exec(html);
+      if (pg2) {
+        try {
+          const { text: html2 } = await fetchHtml(absUrl("https://wallpapers.com", pg2[1]));
+          out.push(...parseWallpapersCom(html2));
+        } catch { /* page 2 is a bonus */ }
+      }
     }
-    const items = dedupe(out);
-    if (!items.length) throw new Error("no results parsed from Wallpapers.com");
-    const capped = cap40(items);
-    capped.via = via;
-    return capped;
+    const items = cap80(dedupe(out));
+    if (!items.length) {
+      // A genuine search page with an empty grid (verified live 2026-11-15:
+      // /search/catgirl returns HTTP 200, title "Search results for
+      // 'catgirl'", body class "search-results", zero result anchors) is
+      // not a parse failure — return it marked empty so the status pill
+      // says "0 found" in green instead of going red. If the page isn't a
+      // search-results page at all, the markup probably changed — fail
+      // honestly so a real breakage still shows up as an error.
+      if (/Search results for|class="[^"]*search-results/.test(html)) {
+        items.empty = true;
+        items.via = via;
+        return items;
+      }
+      throw new Error("no results parsed from Wallpapers.com");
+    }
+    items.via = via;
+    return items;
   },
 
   // WallpaperCave — /search?q= is a category hub, not wallpapers. The adapter
@@ -183,17 +254,31 @@ const EXTRA_SOURCES = {
   async alphacoders(q) {
     q = formatQueryFor("alphacoders", q);
     const { text: html, via } = await fetchHtml(`https://wall.alphacoders.com/search.php?search=${encodeURIComponent(q)}`);
+    // Second page: the search page infinite-scrolls via
+    // alphacoders.com/search/view?q=<q>&page=2&quickload=1 (verified live
+    // 2026-11-15: returns new items in the same markup; the plain
+    // search.php?page=2 returns page 1 again). A failed page-2 fetch just
+    // leaves the page-1 results standing.
+    const pages = [html];
+    try {
+      const { text: html2 } = await fetchHtml(`https://alphacoders.com/search/view?q=${encodeURIComponent(q)}&page=2&quickload=1`);
+      pages.push(html2);
+    } catch { /* page 2 is a bonus */ }
     const dims = new Map(); // id -> { w, h, fmt }
-    for (const dm of html.matchAll(/big\.php\?i=(\d+)"[\s\S]{0,900}?<meta itemprop="width" content="(\d+)">\s*<meta itemprop="height" content="(\d+)">(?:\s*<meta itemprop="fileFormat" content="(\w+)">)?/g)) {
-      dims.set(dm[1], { w: +dm[2], h: +dm[3], fmt: (dm[4] || "jpg").toLowerCase() });
+    for (const pageHtml of pages) {
+      for (const dm of pageHtml.matchAll(/big\.php\?i=(\d+)"[\s\S]{0,900}?<meta itemprop="width" content="(\d+)">\s*<meta itemprop="height" content="(\d+)">(?:\s*<meta itemprop="fileFormat" content="(\w+)">)?/g)) {
+        dims.set(dm[1], { w: +dm[2], h: +dm[3], fmt: (dm[4] || "jpg").toLowerCase() });
+      }
     }
     const perId = new Map(); // id -> [thumb urls]
-    for (const m of html.matchAll(/https:\/\/images\d*\.alphacoders\.com\/\d+\/thumb-(?:350|440|1920)-(\d+)\.(jpg|png|webp)/g)) {
-      const arr = perId.get(m[1]) || [];
-      arr.push(m[0]);
-      perId.set(m[1], arr);
+    for (const pageHtml of pages) {
+      for (const m of pageHtml.matchAll(/https:\/\/images\d*\.alphacoders\.com\/\d+\/thumb-(?:350|440|1920)-(\d+)\.(jpg|png|webp)/g)) {
+        const arr = perId.get(m[1]) || [];
+        arr.push(m[0]);
+        perId.set(m[1], arr);
+      }
     }
-    const ids = [...new Set([...html.matchAll(/big\.php\?i=(\d+)/g)].map((m) => m[1]))];
+    const ids = [...new Set(pages.flatMap((pageHtml) => [...pageHtml.matchAll(/big\.php\?i=(\d+)/g)].map((m) => m[1])))];
     const out = [];
     for (const id of ids) {
       const urls = perId.get(id) || [];
@@ -225,7 +310,7 @@ const EXTRA_SOURCES = {
         date: null, // search pages show no date — dateless in Newest sort
         score: null, // no popularity number on the page — unscored in Best sort
       });
-      if (out.length >= 40) break;
+      if (out.length >= 80) break;
     }
     if (!out.length) throw new Error("no results parsed from AlphaCoders");
     out.via = via;
@@ -242,32 +327,23 @@ const EXTRA_SOURCES = {
     q = formatQueryFor("zerochan", q);
     const { text: html, via } = await fetchHtml(`https://www.zerochan.net/search?q=${encodeURIComponent(q)}`);
     const out = [];
-    const liRe = /<li[^>]+data-id="(\d+)"[^>]*>([\s\S]*?)<\/li>/g;
-    let m;
-    while ((m = liRe.exec(html)) && out.length < 40) {
-      const id = m[1];
-      const block = m[2];
-      const thumb = /(?:data-src|src)="(https:\/\/s3\.zerochan\.net\/240\/[^"]+)"/.exec(block);
-      const full = /href="(https:\/\/static\.zerochan\.net\/[^"]+\.full\.\d+\.\w+)"/.exec(block);
-      if (!thumb || !full) continue;
-      const res = /title="(\d+)&#10005;(\d+)/.exec(block);
-      out.push({
-        thumb: thumb[1],
-        full: full[1],
-        // Fallback: the 240px thumb from s3 — a different host than the
-        // full image, so a block on one doesn't necessarily kill the other.
-        alts: [thumb[1]],
-        page: `https://www.zerochan.net/${id}`,
-        width: res ? parseInt(res[1], 10) : 0,
-        height: res ? parseInt(res[2], 10) : 0,
-        source: "Zerochan",
-        date: null, // search pages show no date — dateless in Newest sort
-        score: null, // no popularity number on the page — unscored in Best sort
-      });
+    parseZerochanPage(html, out);
+    // Second page: search redirects to a tag page (the canonical link,
+    // e.g. /Nekomimi), and ?p=2 works THERE — ?p=2 on /search itself is
+    // ignored and returns page 1 again (verified live 2026-11-15:
+    // /Nekomimi?p=2 returned 48 new ids, 0 overlap). A failed page-2
+    // fetch just leaves the page-1 results standing.
+    const canon = /<link rel="canonical" href="(https:\/\/www\.zerochan\.net\/[^"]+)"/.exec(html);
+    if (canon && !/\/search/.test(canon[1])) {
+      try {
+        const sep = canon[1].includes("?") ? "&" : "?";
+        const { text: html2 } = await fetchHtml(`${canon[1]}${sep}p=2`);
+        parseZerochanPage(html2, out);
+      } catch { /* page 2 is a bonus */ }
     }
     const items = dedupe(out);
     if (!items.length) throw new Error("no results parsed from Zerochan (it may be showing its browser check)");
-    const capped = cap40(items);
+    const capped = cap80(items);
     capped.via = via;
     return capped;
   },

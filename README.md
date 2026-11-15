@@ -234,16 +234,21 @@ direct again (the thumbnail still shows).
 
 ## Preload
 
-The **Preload** select in the toolbar (Off / 0.5 / 1 / 2 / 5 GB, default
+The **Preload** field in the toolbar (a number input in GB, default
 **1 GB**, remembered in the browser) says how much full-image data to
 fetch up front while you wait after a search: once results render, the
 app eagerly upgrades full-res images in display order until that much has
-loaded, showing progress next to the select ("Preloading ≈ 0.4 / 1 GB…").
-This is a preload amount, not a cap — when the target is reached eager
-preloading stops, but scrolling still upgrades cards on demand as usual,
-so nothing is ever blocked by the number. Off is the old lazy-only
-behaviour. The count resets on every new search; raising the target
-mid-search resumes preloading with the next queued card.
+loaded. Type any amount — 0.5, 2.5, 12 — or tap a preset chip (Off / 0.5 /
+1 / 2 / 5 GB); empty, 0 or a negative number means Off, and anything over
+50 GB clamps to 50. While preloading runs, a progress line under the
+status pills shows "Preloading… N wallpapers · X / Y GB" with a thin
+bar; it only appears while a search is preloading toward a set target,
+and hides when preload is Off or the target is reached. This is a preload
+amount, not a cap — when the target is reached eager preloading stops,
+but scrolling still upgrades cards on demand as usual, so nothing is ever
+blocked by the number. Off is the old lazy-only behaviour. The count
+resets on every new search; raising the target mid-search resumes
+preloading with the next queued card.
 
 How the bytes are counted — honestly approximate, so the meter always
 reads "≈": Danbooru and Wallhaven report an exact `file_size` per item
@@ -273,6 +278,62 @@ order all work on favorites too). Click it again — or run a new search —
 to go back to normal results. Favorites survive reloads and new searches,
 and a wallpaper that shows up again in a later search still shows its
 filled heart. Everything is local-only: no account, no server, no export.
+
+## Trending
+
+The **Trending** tab (next to Search, above the results) shows what's
+popular right now, with no query to type:
+
+- **Wallhaven's daily toplist** — `sorting=toplist`, `topRange=1d`
+  (verified live 2026-11-15: 24 results through the local proxy).
+- **Danbooru's most popular posts today** — `order:rank` plus today's
+  date (verified live 2026-11-15 via curl; the VM's IP is intermittently
+  Cloudflare-blocked by Danbooru, so a run can also come back HTTP 403 —
+  the pill says so honestly and the Wallhaven results still show).
+
+Only those two: Safebooru has no popularity endpoint, and AlphaCoders'
+top page is four featured items with no dimensions — not a real feed
+(checked live 2026-11-15). The same filters as search apply: Content
+mode and the server-side min-resolution filter are inside the adapters,
+the device/ratio filter and the result limit run on the grid, the
+Wallhaven color swatch applies, and the source checkboxes are respected
+(uncheck Wallhaven or Danbooru and it's skipped). Favorites work on
+trending cards exactly like search cards, and switching back to the
+Favorites view remembers whether you came from Trending or Search.
+
+Under the tab, a row of **popular-search chips** (code geass, catgirl,
+cyberpunk 2077, anime, minimal, dark aesthetic, nature, space, city
+night, mountains, neon, abstract) runs that term as a normal search:
+back to the Search tab, the term in the box, submitted. The first visit
+to Trending fetches live; going back later re-renders from memory, and
+the ↻ Refresh button forces a fresh load.
+
+## Changes in v5.4 (2026-11-15)
+
+- **Preload is a typed amount now**: a GB number input with preset chips
+  (Off / 0.5 / 1 / 2 / 5), clamps at 50 GB; the meter is a live progress
+  line ("Preloading… N wallpapers · X / Y GB" + bar) that only shows while
+  a search is preloading toward a set target.
+- **Trending tab**: Wallhaven's daily toplist + Danbooru's most popular
+  posts today, same filters as search, plus 12 popular-search chips.
+- **More results**: Danbooru fetches up to 100 passing posts (was 40, 200
+  per page, 2 pages), Wallhaven 48 across 2 pages, scrapers paginate to a
+  second page (Wallpapers.com `?p=2` on the listing slug, AlphaCoders
+  quickload endpoint, Zerochan tag page). The sites' own options are used
+  where they exist: Danbooru `order:score` in Best mode, Wallhaven
+  `ratios=` for the ratio filter. One verified exception: Wallhaven's
+  toplist + `ratios=` returns 0, so Trending keeps ratio filtering local.
+- **Error fixes**: a genuine empty page (Wallpapers.com "catgirl") is a
+  green "0 found" pill, not red; failed cards show the reason (timeout vs
+  blocked/missing) and a Retry button; huge originals display their ~850px
+  sample in the grid while the Full image link stays on the original.
+- **UI**: flatter and quieter — decorative gradients removed, sharper type
+  hierarchy, calmer cards, 8px radii throughout.
+- Debug pass: a card that recovers via Retry gets its alt text back
+  (it was blanked on failure and never restored). Optimizer pass: Newest
+  sort precomputes dates (~2× faster), `absUrl` fast path for
+  root-relative hrefs, one grid traversal per render, verified-URL cache
+  capped at 2000 entries. QA harness 137 checks, optimizer all green.
 
 ## Changes since v5.2 (merged from the local agent's work, 2026-11-15)
 

@@ -132,16 +132,19 @@
             <option value="0">All wallpapers</option>
           </select>
         </label>
-          <label class="field">Preload
-          <select id="data-preload">
-            <option value="0">Off</option>
-            <option value="536870912">0.5 GB</option>
-            <option value="1073741824" selected>1 GB</option>
-            <option value="2147483648">2 GB</option>
-            <option value="5368709120">5 GB</option>
-          </select>
-        </label>
-          <span id="preload-meter" class="hint"></span>
+          <span class="field preload-field">Preload
+          <span class="preload-input-wrap">
+            <input id="data-preload" type="number" min="0" max="50" step="0.5" value="1" inputmode="decimal" aria-label="Preload amount in gigabytes">
+            <span class="preload-unit" aria-hidden="true">GB</span>
+          </span>
+          <span class="preload-presets" role="group" aria-label="Preload presets">
+            <button type="button" class="preload-preset" data-gb="0">Off</button>
+            <button type="button" class="preload-preset" data-gb="0.5">0.5</button>
+            <button type="button" class="preload-preset" data-gb="1">1</button>
+            <button type="button" class="preload-preset" data-gb="2">2</button>
+            <button type="button" class="preload-preset" data-gb="5">5</button>
+          </span>
+        </span>
           <button type="button" id="favs-toggle" class="favs-toggle" aria-pressed="false">★ Favorites (0)</button>
         </div>
       </div>
@@ -171,6 +174,38 @@
       </div>
       <div id="site-buttons"></div>
     </section>
+
+    <nav class="tabs" role="tablist" aria-label="Search or trending">
+      <button type="button" id="tab-search" class="tab active" role="tab" aria-selected="true" aria-controls="results">Search</button>
+      <button type="button" id="tab-trending" class="tab" role="tab" aria-selected="false" aria-controls="results">Trending</button>
+    </nav>
+
+    <section id="trending-panel" class="trending-panel" hidden>
+      <div class="trending-head">
+        <h2>Popular right now</h2>
+        <p class="hint">Live from Wallhaven's daily toplist and Danbooru's most popular posts today — the same Content, resolution and ratio filters as search apply. AlphaCoders has no real trending feed (its top page is four featured items), so it sits this one out.</p>
+        <button type="button" id="trending-refresh" class="btn-ghost">↻ Refresh</button>
+      </div>
+      <div class="chip-group" id="trending-chips" role="group" aria-label="Popular searches">
+        <button type="button" class="trend-chip" data-query="code geass">code geass</button>
+        <button type="button" class="trend-chip" data-query="catgirl">catgirl</button>
+        <button type="button" class="trend-chip" data-query="cyberpunk 2077">cyberpunk 2077</button>
+        <button type="button" class="trend-chip" data-query="anime">anime</button>
+        <button type="button" class="trend-chip" data-query="minimal">minimal</button>
+        <button type="button" class="trend-chip" data-query="dark aesthetic">dark aesthetic</button>
+        <button type="button" class="trend-chip" data-query="nature">nature</button>
+        <button type="button" class="trend-chip" data-query="space">space</button>
+        <button type="button" class="trend-chip" data-query="city night">city night</button>
+        <button type="button" class="trend-chip" data-query="mountains">mountains</button>
+        <button type="button" class="trend-chip" data-query="neon">neon</button>
+        <button type="button" class="trend-chip" data-query="abstract">abstract</button>
+      </div>
+    </section>
+
+    <span id="preload-meter" class="preload-meter" hidden>
+      <span class="preload-meter-text"></span>
+      <span class="preload-meter-bar" aria-hidden="true"><span class="preload-meter-fill"></span></span>
+    </span>
 
     <div id="status" class="status-row" aria-live="polite"></div>
 
