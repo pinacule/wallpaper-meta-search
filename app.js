@@ -50,6 +50,21 @@ let resultsElCache = null;
 let statusElCache = null;
 function resultsBox() { if (!resultsElCache) resultsElCache = $("#results"); return resultsElCache; }
 function statusBox() { if (!statusElCache) statusElCache = $("#status"); return statusElCache; }
+// Reserve the status row's height for the pills that are about to arrive
+// (see .status-reserved in style.css): a search starts with one short
+// busy pill and ends with one pill per source plus total/ratio/limit
+// pills, and without the reserve the row grows from one line to two (or
+// more) as results render — the whole grid jumps down ~48px in the same
+// frame the cards appear (v5.7 browser test). The reserve only switches
+// on for 6+ sources: with fewer, the final pills fit one row at desktop
+// widths, so there is nothing to reserve and no dead space to pay for.
+// The height itself is viewport-dependent (media queries in style.css),
+// so this only toggles the class — and because it is set in the same
+// synchronous block as the busy pill, the row is already at its final
+// height before the first source reports in.
+function setStatusReserve(sourceCount) {
+  statusBox().classList.toggle("status-reserved", sourceCount >= 6);
+}
 // Every other static control, looked up once per page lifetime instead of
 // once per call: loadSettings, saveSettings and the view functions used to
 // re-query the same elements on every search (~14 document queries per
@@ -1572,6 +1587,11 @@ function updateFavsToggle() {
 function setFavsView(on) {
   favsView = on;
   updateFavsToggle();
+  // Entering Favorites: its status is one or two pills, so a reserve left
+  // over from a many-source search would be dead space here. Leaving
+  // Favorites needs no reserve either — the back path re-renders the
+  // previous view's final pills directly, with no busy phase.
+  if (on) setStatusReserve(0);
   syncPreloadView();
 }
 
@@ -1907,6 +1927,10 @@ async function search(ev) {
   renderSiteLinks(q);
 
   const chosen = $$(".source:checked").map((c) => c.value);
+  // Reserve the status row for the pills this search will produce (see
+  // setStatusReserve): without it the row grows a line when results
+  // render and the grid jumps down.
+  setStatusReserve(chosen.length);
   statusBox().innerHTML = `<span class="status-pill pill-busy"><span class="spinner"></span>Searching ${chosen.length} source${chosen.length === 1 ? "" : "s"}…</span>`;
   // The skeletons replace the cards — discard their in-flight upgrades
   // first (see discardRenderedCards), or an orphaned probe stalls the
@@ -2174,6 +2198,12 @@ function setTrendingView(on) {
   if (t) { t.classList.toggle("active", on); t.setAttribute("aria-selected", on ? "true" : "false"); }
   const panel = staticEl("trending-panel");
   if (panel) panel.hidden = !on;
+  // Entering Trending: at most two sources, so its pills fit one row —
+  // clear any reserve left by a many-source search (renderTrendingView
+  // re-renders final pills directly, with no busy phase, so nothing here
+  // needs reserving; loadTrending re-sets it right after, to off as well
+  // since its chosen list is capped at the two trending sources).
+  if (on) setStatusReserve(0);
   syncPreloadView();
 }
 
@@ -2201,6 +2231,7 @@ async function loadTrending(force) {
   updatePreloadMeter();
 
   const chosen = $$(".source:checked").map((c) => c.value).filter((n) => TRENDING_SOURCES.includes(n));
+  setStatusReserve(chosen.length);
   statusBox().innerHTML = `<span class="status-pill pill-busy"><span class="spinner"></span>Loading what's trending…</span>`;
   // The skeletons replace the cards — discard their in-flight upgrades
   // first (see discardRenderedCards), or an orphaned probe stalls the

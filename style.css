@@ -388,6 +388,44 @@ code {
   margin: 18px 0 0;
 }
 .status-row:empty { display: none; }
+/* Reserved height for the status row while a many-source search loads.
+   The row starts with one short busy pill and ends with one pill per
+   source plus total/ratio/limit pills — about 2900px of pills for 7
+   sources at default filters, measured from the v5.7 live run — so
+   without this the row grows from one line to two as results render
+   and the whole grid jumps down ~48px in the same frame the cards
+   appear. The class is set by setStatusReserve() for 6+ sources only,
+   in the same block as the busy pill, so the row is already at its
+   final height before the first source reports in. One pill row is
+   1.2rem of text (0.8rem at body line-height 1.5) + 10px of
+   padding/border, rows are separated by the 8px row gap, so two rows
+   are calc(2.4rem + 28px). The taller rungs are the same arithmetic
+   for more rows — they are estimates (pill text varies with the
+   query), so each is right to about a row at its edges: a rung that
+   over-reserves leaves dead space, one that under-reserves leaves a
+   smaller residual shift. Above 3000px the pills fit one row, so the
+   reserve switches off entirely. */
+.status-row.status-reserved {
+  min-height: calc(2.4rem + 28px);
+  align-content: flex-start;
+}
+@media (max-width: 480px) {
+  /* Phones: 7 sources are about 10 pill lines at 412px (the Danbooru
+     pill wraps to two lines and most others take a line each), ~365px —
+     the two-row reserve would leave most of the shift in place. Measured
+     by packing the v5.7 live-run pills at 412px content width (9 lines
+     at the low char-width bound, 10 central, 11 at the high bound), so
+     10 lines is the central estimate — right to about a line either way.
+     (The first version of this rung said 8 lines and its two terms
+     disagreed — 10.8rem is 9 lines of text but 136px is 8 lines of
+     padding/gaps — under-reserving the realistic phone case by ~1.5
+     lines; fixed in the round-4 debug pass.) */
+  .status-row.status-reserved { min-height: calc(12rem + 172px); }
+}
+@media (min-width: 3000px) {
+  /* Ultrawide: the pills fit one row, so there is nothing to reserve. */
+  .status-row.status-reserved { min-height: 0; }
+}
 .status-pill {
   display: inline-flex;
   align-items: center;

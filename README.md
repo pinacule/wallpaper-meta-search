@@ -313,7 +313,32 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.7 (round 3 — bug hunt on the v5.6 browser test, 2026-11-16 — unreleased)
+## Changes in v5.8 (round 4 — bug hunt on the v5.7 browser test, 2026-11-16 — unreleased)
+
+- **Status-pill shift fixed**: while results loaded, the whole grid
+  shifted down ~48px once because the status-pill area grew from one
+  row (the busy pill) to two (one pill per source plus totals) as
+  results rendered. The row now reserves its final height from the
+  busy phase on (`status-reserved`, set for 6+ sources in the same
+  block as the busy pill), so it is already two rows tall before the
+  first source reports in. The reserve is viewport-aware — about 8
+  pill lines on phones, off entirely above 3000px where the pills fit
+  one row — and it never applies to Trending or Favorites, whose
+  pills fit one row. With 5 or fewer sources there is no reserve
+  either, so there is no dead space to pay for in those views.
+- **Preload meter's live invisibility — checked, intended**: on the
+  Pages site the meter never appears because public proxies stall and
+  the preload queue drains, which hides it by design — it is a live
+  progress line only (Off, target reached, queue drained, Favorites
+  all hide it), not a status display. The per-view counters from v5.7
+  are untouched; the live test simply never produced progress to
+  preserve. Its appearance is part of the same frame as the cards
+  rendering, so it reads as one content swap, not a jump of stable
+  content — reserving a permanent slot for it would leave dead space
+  after every preload, which is worse.
+- QA harness 257 checks (245 + 12 new Group X), optimizer all green.
+
+## Changes in v5.7 (round 3 — bug hunt on the v5.6 browser test, 2026-11-16 — pushed as 3e68491d)
 
 - **Jumping images fixed**: a card's aspect-ratio box is now frozen at
   its render-time reserve — `imgLoaded` no longer rewrites the box to
