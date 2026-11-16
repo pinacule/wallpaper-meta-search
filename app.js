@@ -2104,7 +2104,21 @@ function updatePreloadMeter(counts) {
   if (preloadPhase === "paused") {
     text.textContent = `Paused — target reached · ${n} wallpaper${plural} · ${fmtBytes(spent)} / ${fmtBytes(target)}`;
   } else if (preloadPhase === "ready") {
-    text.textContent = `Ready · ${n} wallpaper${plural} · ${fmtBytes(spent)} / ${fmtBytes(target)}`;
+    // "Ready" with failures says so (round 12): the v5.15 browser test
+    // caught "Ready · 34 wallpapers" while 44/100 cards had permanently
+    // failed — failed cards are settled, not loading, so the set IS done
+    // and the phase is honestly "ready", but the meter never mentioned
+    // them. The failed count is appended only when > 0; a clean set
+    // keeps the plain text. "Preview only" cards count as failed here
+    // (they never got their full image) — the same number the filter row
+    // shows as Not ready once loading reaches 0. Paused shows no failed
+    // count (the budget is the point there, and failures while paused
+    // are still "not ready" in the filter row); the loading text doesn't
+    // either (the set isn't done yet).
+    const failed = c.failed || 0;
+    text.textContent = failed > 0
+      ? `Ready · ${n} wallpaper${plural} · ${fmtBytes(spent)} / ${fmtBytes(target)} · ${failed} failed`
+      : `Ready · ${n} wallpaper${plural} · ${fmtBytes(spent)} / ${fmtBytes(target)}`;
   } else {
     text.textContent = `Preloading… ${n} wallpaper${plural} · ${fmtBytes(spent)} / ${fmtBytes(target)}`;
   }
@@ -2144,14 +2158,24 @@ function refreshPreloadPhase(counts) {
     // "Paused — target reached" would be wrong when nothing is left).
     if (preloadPhase === "loading" || preloadPhase === "paused") {
       preloadPhase = "ready";
-      updatePreloadMeter(c);
     }
   } else if (preloadPhase === "ready") {
     // A card went pending again (a Retry, or a new render) — the meter
     // must not claim Ready while anything is still loading.
     preloadPhase = "loading";
-    updatePreloadMeter(c);
   }
+  // Repaint on EVERY card state change (round 12), not only on a phase
+  // change: the observer can load cards while the pump is stopped
+  // (drained or paused), and the meter's number would otherwise freeze
+  // at the pump's last paint while the filter row keeps climbing — the
+  // v5.15 browser test saw the meter stuck on "Ready · 34 wallpapers"
+  // against a filter row of Loaded (56), and falling 97 → 68 → 34 across
+  // Load more clicks while the filter climbed to 174. The counts are
+  // already computed by the caller, so this is a text write, not a DOM
+  // walk, and the optimizer's "0 queries while pumping" check is
+  // untouched. (The pump's own updatePreloadMeter calls are now
+  // redundant for the count, but harmless — they also refresh the fill.)
+  updatePreloadMeter(c);
 }
 
 // Preload phase (round 10; redefined round 11): what the meter claims
@@ -2173,7 +2197,11 @@ function refreshPreloadPhase(counts) {
 //   not loading). This is the user's "it is ready" state: the loaded-only
 //   grid shows everything that will ever load. "Ready" is a property of
 //   the CURRENT SET only: loading more pages re-arms it (the new batch
-//   loads, then the phase settles again).
+//   loads, then the phase settles again). The meter still says "Ready"
+//   when cards failed — failed is settled, so the set IS done — but it
+//   says how many (round 12): "Ready · 56 wallpapers · 50 MB / 1.0 GB
+//   · 44 failed", so it never claims everything loaded when nearly half
+//   the set failed. A clean set (0 failed) keeps the plain "Ready" text.
 // The pump's "queue drained" alone is NOT "ready" — the observer may
 // still be upgrading cards that scrolled into view. refreshPreloadPhase
 // (called from the pump's stop paths and on every card load/fail) is what
@@ -2283,9 +2311,9 @@ function gridFilterActive() {
 let cachedLoadedCounts = null;
 function loadedCardCounts() {
   const box = resultsBox();
-  if (!box) return { total: 0, loaded: 0, pending: 0, loading: 0, loadedBytes: 0 };
+  if (!box) return { total: 0, loaded: 0, pending: 0, loading: 0, loadedBytes: 0, failed: 0 };
   const cards = box.querySelectorAll(".card");
-  let loaded = 0, loading = 0, loadedBytes = 0;
+  let loaded = 0, loading = 0, failed = 0, loadedBytes = 0;
   for (const card of cards) {
     // The img is cached on the card at build time (see buildCard) — a
     // querySelector here would be one call per card, per invocation.
@@ -2295,17 +2323,17 @@ function loadedCardCounts() {
       loadedBytes += img ? (Number(img.dataset.cost) || 0) : 0;
       continue;
     }
-    // Still loading (round 11): not loaded, and not settled as failed.
-    // A card is settled without loading when its full failed outright
-    // (state "failed") or when it is "Preview only" (state "thumb" with
-    // the full-failed class — the thumbnail shows, a Retry is manual, not
-    // loading). Everything else — a fresh card, a card mid-upgrade, a card
-    // whose thumb arrived but whose full is still pending, a thumbOnly
-    // card whose thumb hasn't arrived yet — is still loading.
-    if (!img || img.dataset.state === "failed" || card.classList.contains("full-failed")) continue;
+    // Settled as failed (round 12): the full failed outright (state
+    // "failed") or the card kept only its thumbnail ("Preview only",
+    // full-failed class) — either way it will never load, so it is not
+    // "loading" and it counts as failed for the meter. A card with no
+    // img at all can never load either. When loading reaches 0, pending
+    // == failed, so the meter's failed count always agrees with the
+    // filter row's Not ready count at Ready.
+    if (!img || img.dataset.state === "failed" || card.classList.contains("full-failed")) { failed++; continue; }
     loading++;
   }
-  return { total: cards.length, loaded, pending: cards.length - loaded, loading, loadedBytes };
+  return { total: cards.length, loaded, pending: cards.length - loaded, loading, loadedBytes, failed };
 }
 function updateLoadedFilterButtons() {
   const row = staticEl("loaded-filter");
@@ -2314,13 +2342,6 @@ function updateLoadedFilterButtons() {
   cachedLoadedCounts = counts; // refresh the cache (see above) — the
   // meter and the phase reconcile read this instead of re-walking the DOM
   const { total, loaded, pending } = counts;
-  // The row only exists in the search view with a target set AND with
-  // cards to filter (AW3): over an empty state (0 results, idle, ratio
-  // hidden) it would show three (0) buttons — and, worse, the empty branch
-  // in renderResults returns before applyGridFilter, so without this gate
-  // the row keeps the PREVIOUS search's counts above "No wallpapers found".
-  row.hidden = !gridFilterActive() || total === 0;
-  if (row.hidden) return counts;
   const setBtn = (id, label, on) => {
     const b = staticEl(id);
     if (!b) return;
@@ -2328,6 +2349,23 @@ function updateLoadedFilterButtons() {
     b.setAttribute("aria-pressed", on ? "true" : "false");
     b.classList.toggle("active", on);
   };
+  // The row only exists in the search view with a target set AND with
+  // cards to filter (AW3): over an empty state (0 results, idle, ratio
+  // hidden) it would show three (0) buttons — and, worse, the empty branch
+  // in renderResults returns before applyGridFilter, so without this gate
+  // the row keeps the PREVIOUS search's counts above "No wallpapers found".
+  row.hidden = !gridFilterActive() || total === 0;
+  if (row.hidden) {
+    // Zero the labels while hidden (round 12): the row is visually hidden
+    // by the reserve rule, but its DOM labels kept the previous search's
+    // counts — anything reading the DOM (including the v5.15 browser test)
+    // saw stale numbers. The labels are re-set from the true counts the
+    // moment the row unhides.
+    setBtn("filter-loaded", "✓ Loaded (0)", gridFilter === "loaded");
+    setBtn("filter-pending", "Not ready (0)", gridFilter === "pending");
+    setBtn("filter-all", "All (0)", gridFilter === "all");
+    return counts;
+  }
   setBtn("filter-loaded", `✓ Loaded (${loaded})`, gridFilter === "loaded");
   setBtn("filter-pending", `Not ready (${pending})`, gridFilter === "pending");
   setBtn("filter-all", `All (${total})`, gridFilter === "all");
@@ -3088,7 +3126,7 @@ async function search(ev) {
   // call below re-caches the old grid's counts — the old cards are still
   // in the DOM — but the refresh after the skeletons below zeroes the
   // cache again before anything reads it in the busy phase.)
-  cachedLoadedCounts = { total: 0, loaded: 0, pending: 0, loading: 0, loadedBytes: 0 };
+  cachedLoadedCounts = { total: 0, loaded: 0, pending: 0, loading: 0, loadedBytes: 0, failed: 0 };
   // New search session: the loaded record starts over too (round 10) —
   // the new results are different cards, and the grid filter re-applies
   // to them as they load. The phase restarts as "loading" when a target

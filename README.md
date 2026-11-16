@@ -326,7 +326,62 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.15 (round 11 — the two browser findings, 2026-11-16 — NOT YET PUSHED)
+## Changes in v5.16 (round 12 — the meter/filter divergence, 2026-11-16)
+
+- **The meter now always agrees with the filter row**: the v5.15
+  browser test caught the meter stuck on "Ready · 34 wallpapers"
+  while the filter row said Loaded (56), and falling 97 → 68 → 34
+  across Load more clicks while the filter climbed to 174. Root cause:
+  the meter's text was only repainted on pump iterations and phase
+  changes — once the pump stopped (drained or paused) the observer
+  kept loading cards and the meter froze at the pump's last paint.
+  `refreshPreloadPhase` now repaints the meter on every card state
+  change (a text write, not a DOM walk — the counts are already
+  computed by the caller). Reproduced in the harness first (meter 2
+  vs filter 3, fixed to 3 = 3). The Load more fall was the same bug,
+  not lost state — the growing render preserves loaded cards and the
+  full rebuild restores them via `loadedPages`.
+- **"Ready" now names the failures**: the same test caught "Ready"
+  with 44/100 cards permanently failed and the meter never mentioning
+  it. It now reads "Ready · 56 wallpapers · 50 MB / 1.0 GB · 44
+  failed" when failures exist; a clean set keeps the plain "Ready"
+  text. `loadedCardCounts` gained a `failed` field (settled-failed:
+  state "failed", "Preview only" full-failed, or no img); at Ready,
+  pending == failed, so the meter's failed count always agrees with
+  the filter row's Not ready count. Paused shows no failed count
+  (the budget is the point there). Packing verified: the longest
+  Ready-with-failures text still fits the 2-line phone rung.
+- **Stale filter labels zeroed**: during a new search's busy phase
+  the filter row's DOM labels kept the previous search's counts (the
+  row is visually hidden by the reserve rule, but the labels were
+  stale). `updateLoadedFilterButtons` now zeroes the three labels
+  whenever the row hides, and they come back true when it unhides.
+- **Debugger pass (no bugs found, 9 seam guards)**: verified the
+  meter/Ready seam — the repainted meter always shows the right
+  failed count (none while loading or paused, matching Not ready at
+  Ready, because pending = failed + loading always); repaint cost
+  measured (21 changed text writes over a 20-card pump run, ~1/card;
+  fill ~3/card; all O(1) writes, no loop, no layout reads); the
+  `failed` definition's edge cases (thumbOnly thumb error → failed,
+  thumb still loading → loading and blocks Ready, Retry un-fails, a
+  card failing after promotion is impossible without a Retry or a new
+  render first); label zeroing on every hide path (new-search busy,
+  empty states, Favorites/Trending switches); the AW1 per-batch
+  budget untouched (Load more after Paused still works).
+- **Optimizer pass (nothing left to take, 5 guards)**: the
+  unconditional repaint costs ~0.010ms/call (61–63 calls over a
+  20-card pump run, 0.63ms total), 0 queries while pumping, zero
+  layout reads anywhere in app.js; the `failed` counter rides the
+  same single `loadedCardCounts` walk (1 querySelectorAll per call,
+  no second pass); round-2 claims re-verified (parallel pages
+  151–152ms, growing 25.8ms vs rebuild 54.6ms, Gelbooru no-key = 0
+  fetches). Not taken: the counts walk itself (~0.05ms/call in a real
+  browser — a running counter risks wrong user-visible counts) and
+  the pump's redundant meter calls (~0.01ms each).
+- QA harness 537 checks (509 + 4 meter repaint + 10 Ready with
+  failures + 9 debugger + 5 optimizer), optimizer all green.
+
+## Changes in v5.15 (round 11 — the two browser findings, 2026-11-16 — pushed as 099d0a60)
 
 - **The first-search shift is fixed**: the v5.14 browser test showed the
   grid still jumping ~+29px on the FIRST search after page load (0px on
