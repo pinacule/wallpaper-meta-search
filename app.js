@@ -926,7 +926,9 @@ function shortReason(err, sourceName) {
 // all in flight at once. The probe has a 15 s timeout per attempt (a stall
 // counts as a failure), one delayed retry per URL (CDNs 503 in bursts),
 // then steps through the alternates. When a candidate loads, the visible
-// <img> swaps to it — same aspect ratio, so the card never changes height.
+// <img> swaps to it — the anchor's aspect-ratio never changes (see
+// imgLoaded), so the card never changes height and the masonry never
+// rebalances around it.
 //
 // The box height NEVER comes from the image: the aspect-ratio is set on
 // the <a class="thumb"> anchor (inline style from the known dimensions,
@@ -1091,13 +1093,23 @@ function markImageFailed(img, reason) {
 function imgLoaded(img) {
   const w = img.naturalWidth, h = img.naturalHeight;
   if (!w || !h) return;
-  // The anchor/card/badge were cached at render time (see renderResults):
-  // a load then needs no DOM walk — ~300 traversals saved per 100-card
-  // render across the thumb + full loads (measured in node: 7.23 -> 2.99 ms
-  // per 100 loads). The fallbacks keep direct calls (harness, or an img
-  // built outside renderResults) working.
-  const anchor = img._anchor || img.closest("a.thumb");
-  if (anchor) anchor.style.aspectRatio = `${w} / ${h}`;
+  // The box NEVER changes here: the anchor keeps the aspect-ratio it was
+  // rendered with, even when the loaded image's natural size differs from
+  // the reserve (a size-unknown card keeps its 4:3 box; a listing-ratio
+  // card keeps the listing ratio). The old code "corrected" the box to the
+  // loaded size — and in the CSS multi-column masonry every height change
+  // rebalances the columns, so cards resized AND reshuffled as images
+  // loaded (the v5.6 browser test: a 355x511 placeholder box for a square
+  // image rendering ~355x355, and the top-row order changing on scroll).
+  // The reserve is exact for every source that publishes real dimensions
+  // (API dims, schema.org, WallpaperCave's width/height, Wallpapers.com's
+  // proportional listing thumbs, Zerochan's title resolution), so freezing
+  // it costs nothing there; for the truly-unknown the image letterboxes
+  // inside the 4:3 box with object-fit: contain — stable, and the badge
+  // below still fills in the real size once the full image loads.
+  // The card/badge were cached at render time (see renderResults): a load
+  // then needs no DOM walk. The fallbacks keep direct calls (harness, or
+  // an img built outside renderResults) working.
   const card = img._card || img.closest(".card");
   const badge = img._badge || (card && card.querySelector(".badge-res"));
   if (badge && badge.textContent === "size unknown"
@@ -1158,8 +1170,35 @@ function preloadGbToBytes(gb) {
 function preloadBytesToGb(bytes) {
   return String(Math.round((bytes / GB) * 1000) / 1000);
 }
-let preloadSpent = 0; // bytes charged to eager preloads, this search
-let preloadCount = 0; // wallpapers eagerly preloaded, this search
+let preloadSpent = 0; // bytes charged to eager preloads, this view (see below)
+let preloadCount = 0; // wallpapers eagerly preloaded, this view (see below)
+// Preload progress is PER VIEW, not per page: the meter counts one view's
+// preloads, and switching views must not reset it (the v5.6 browser test:
+// the meter restarted at 0 after a Favorites/Trending round trip —
+// loadTrending zeroed both counters on every fresh load, so the search
+// session's progress was destroyed). Each view's {spent, count} is saved
+// when leaving it and restored on return (see syncPreloadView, called
+// from the view setters). A NEW search is still a new session: search()
+// zeroes the search view's counters AND its stored entry, so stale
+// progress can never resurrect after a later round trip. Favorites never
+// preloads (the pump stops there), so its entry stays {0, 0}.
+const preloadStateByView = new Map(); // view key -> { spent, count }
+let preloadViewKey = "search"; // the view the counters currently belong to
+// Save the outgoing view's counters and restore the incoming view's.
+// Called from setFavsView/setTrendingView AFTER the flag flips, so the
+// current key is the new view and preloadViewKey is still the old one.
+// The double-setter call pattern (renderFavsView calls setFavsView(true)
+// then setTrendingView(false)) is safe: the second call is a no-op
+// because the key already matches.
+function syncPreloadView() {
+  const key = favsView ? "favs" : trendingView ? "trending" : "search";
+  if (key === preloadViewKey) return;
+  preloadStateByView.set(preloadViewKey, { spent: preloadSpent, count: preloadCount });
+  const s = preloadStateByView.get(key);
+  preloadSpent = s ? s.spent : 0;
+  preloadCount = s ? s.count : 0;
+  preloadViewKey = key;
+}
 let preloadQueue = []; // card <img>s in display order, rebuilt per render
 let preloadIndex = 0; // next queue entry to consider (only advances past an
 // item once its upgrade starts or it is skipped — so an item that doesn't
@@ -1533,6 +1572,7 @@ function updateFavsToggle() {
 function setFavsView(on) {
   favsView = on;
   updateFavsToggle();
+  syncPreloadView();
 }
 
 function renderFavsView() {
@@ -1746,11 +1786,12 @@ function renderResults(results, reports, q) {
     // ratio when pixels are unknown (ratioW/ratioH) — and only falls back
     // to 4:3 when even the ratio is unknown. Whatever loads then fills the
     // box with object-fit: contain — never cropped, never distorted.
-    // A loaded image corrects the box itself (see imgLoaded): the thumb's
-    // natural size fixes the ratio at once, and a loaded full image fills
-    // in the badge's real dimensions. That one early correction per
-    // previously-unknown card is the price of a correct box; known items
-    // never move.
+    // The ratio is FROZEN at render: imgLoaded never rewrites it (see
+    // there). A loaded image only fills in the badge's real dimensions.
+    // Freezing is what keeps the masonry still — in CSS multi-column
+    // layout any height change rebalances the columns and reshuffles the
+    // visual order, so a "correction" on load moved cards and changed
+    // their order as the user scrolled.
     // referrerpolicy=no-referrer avoids Referer-based hotlink blocks.
     // Image URLs go through the local proxy when it is up (see
     // proxiedImageUrl) — verified 2026-11-15 to un-stall Zerochan images.
@@ -1857,8 +1898,11 @@ async function search(ev) {
   setTrendingView(false);
   // New search session: the preload meter starts over (bytes already
   // downloaded stay downloaded — the meter counts this search's preloads).
+  // Zero the counters AND the stored search entry, or a later round trip
+  // would resurrect the old numbers (see syncPreloadView).
   preloadSpent = 0;
   preloadCount = 0;
+  preloadStateByView.set(preloadViewKey, { spent: 0, count: 0 });
   updatePreloadMeter();
   renderSiteLinks(q);
 
@@ -2130,6 +2174,7 @@ function setTrendingView(on) {
   if (t) { t.classList.toggle("active", on); t.setAttribute("aria-selected", on ? "true" : "false"); }
   const panel = staticEl("trending-panel");
   if (panel) panel.hidden = !on;
+  syncPreloadView();
 }
 
 function renderTrendingView() {
@@ -2147,10 +2192,12 @@ async function loadTrending(force) {
   if (trendingLoading) return;
   trendingLoading = true;
   const seq = ++viewSeq; // generation guard, see search()
-  // New session: the preload meter starts over (bytes already downloaded
-  // stay downloaded — the meter counts this view's preloads).
-  preloadSpent = 0;
-  preloadCount = 0;
+  // No meter reset here: switching views must not restart the meter (the
+  // v5.6 browser test — a fresh Trending load used to zero both counters,
+  // destroying the search session's progress). The trending view gets its
+  // own counters, saved and restored by syncPreloadView: a first visit
+  // starts at 0, a return visit resumes where it left off, and the search
+  // session's progress survives the round trip.
   updatePreloadMeter();
 
   const chosen = $$(".source:checked").map((c) => c.value).filter((n) => TRENDING_SOURCES.includes(n));

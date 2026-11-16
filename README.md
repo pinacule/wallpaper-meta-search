@@ -313,7 +313,42 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.6 (round 2 — Wallhaven-inspired redesign, 2026-11-16 — unreleased)
+## Changes in v5.7 (round 3 — bug hunt on the v5.6 browser test, 2026-11-16 — unreleased)
+
+- **Jumping images fixed**: a card's aspect-ratio box is now frozen at
+  its render-time reserve — `imgLoaded` no longer rewrites the box to
+  the loaded image's natural size. The reserve is exact for the
+  overwhelming majority of cards (real dimensions from Danbooru,
+  Wallhaven, Safebooru, AlphaCoders, and Zerochan titles; real
+  `<img>` width/height on WallpaperCave pages; proportional listing
+  dimensions on Wallpapers.com), and only truly size-unknown items
+  keep the 4:3 box, letterboxed. The badge still fills in with the
+  true resolution when the full image loads — only the box stays put.
+  Because no card changes height on load, the CSS-columns masonry no
+  longer rebalances and the grid order stays exactly as rendered; no
+  layout change was needed and no code path ever re-sorted on load.
+- **Sticky proxy banner is opaque**: its background was 8% amber over
+  the page, so grid content scrolling underneath bled through the
+  banner text. It is now the exact solid composite of that tint over
+  the page background (`#2d261b`). It is the only sticky/fixed element
+  on the page, and the other translucent backgrounds are intentional
+  in-card overlays, not page chrome.
+- **Preload meter survives tab switches**: switching to
+  Favorites/Trending used to zero the meter because `loadTrending`
+  reset the counters on every fresh load. Preload progress is now kept
+  per view (Search, Trending, Favorites) and restored on the way back;
+  a new search still zeroes the meter, as before. Accounting rules
+  (sample-cost charging etc.) are unchanged.
+- **WallpaperCave transient failures (Pages site) — deliberately no
+  automatic retry**: the 10/19 first-pass failures all recovered on a
+  tab-switch re-render, and a staggered retry would only add a second
+  burst to a host that just throttled the first. Recovery stays manual
+  (per-card Retry) or via any view switch, which discards and rebuilds
+  the cards fresh. (A same-items re-render reuses the card nodes by
+  design, so it does not re-attempt a failed thumb.)
+- QA harness 243 checks (223 + 20 new Group V), optimizer all green.
+
+## Changes in v5.6 (round 2 — Wallhaven-inspired redesign, 2026-11-16 — pushed as e651e5e8)
 
 - **Redesigned in Wallhaven's language**: warm charcoal background
   (`#1c1c1c`) instead of blue-black, a single restrained gold accent
