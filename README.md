@@ -313,7 +313,35 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.10 (round 6 — search vs Trending + copy cleanup, 2026-11-16 — unreleased)
+## Changes in v5.11 (round 7 — the transient top-row reshuffle, 2026-11-16 — unreleased)
+
+- **The round-3 freeze had a hole**: `aspect-ratio` is a preference, and an
+  in-flow `img`'s intrinsic size is the anchor's min-content floor — so a
+  loaded image TALLER than its reserve forced the anchor taller (a
+  Wallpapers.com card whose listing ratio doesn't match the real file, or
+  any 4:3-fallback portrait — the certain trigger: 600x1067 at 300px wide
+  is 533px against a 225px reserve). Each such growth rebalanced the CSS
+  multi-column masonry, so the visual order changed while the DOM order
+  did not — the v5.8/v5.10 late reshuffles, where the top row changed once
+  between settle and +60s and then came back as the height vector
+  completed. The fix is two declarations: the card `img` is now
+  `position: absolute; inset: 0`, so the anchor has no in-flow children
+  at all and its height is purely the aspect-ratio in every state
+  (unloaded, thumb, full, failed). The visual result is identical — the
+  img already filled the anchor exactly. Round 5's ruling (no data
+  re-sort, no re-render) still holds; the growth was layout responding to
+  intrinsic dimensions, not a style write. The debugger verified the
+  mechanism (CSS Sizing 4: aspect-ratio yields to the min-content floor)
+  and the fix (anchor is the containing block; paint/click order right;
+  no in-flow node can enter the anchor), and fixed two comments that
+  contradicted the freeze. The mechanism is spec-reasoned and consistent
+  with all three sightings, not live-proven (no layout engine on this VM)
+  — the next browser run can prove or disprove it directly by comparing
+  an anchor's height to its reserve before and after its thumb loads.
+- QA harness 302 checks (294 + 6 new Group AE + 2 new Group AF),
+  optimizer all green.
+
+## Changes in v5.10 (round 6 — search vs Trending + copy cleanup, 2026-11-16 — pushed as bf227fcb)
 
 - **Trending chips are genuinely popular terms now**: "code geass" was the
   only test artifact in the chip list (hardcoded during Code Geass testing)

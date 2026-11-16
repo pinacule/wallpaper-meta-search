@@ -1098,11 +1098,11 @@ function markImageFailed(img, reason) {
 }
 
 // A card image finished loading, so the browser knows its true size.
-// For items whose listing never stated dimensions, use it: the ratio
-// (every thumb here is ratio-preserving) fixes the box at once, and when
-// the image showing is the FULL one, its pixels ARE the real dimensions,
-// so the badge stops saying "size unknown". Idempotent — fires again on
-// every src swap (thumb -> full), and the badge check makes the
+// That size is used only for the badge: when the image showing is the
+// FULL one, its pixels ARE the real dimensions, so the badge stops
+// saying "size unknown". The box itself never changes here (see below) —
+// the loaded ratio is never applied to the anchor. Idempotent — fires
+// again on every src swap (thumb -> full), and the badge check makes the
 // dimension fill-in a one-time thing. Items with parsed dimensions are
 // unaffected (their ratio already matches; the badge is already set).
 function imgLoaded(img) {

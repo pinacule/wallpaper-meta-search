@@ -509,6 +509,25 @@ code {
   50% { background-color: #2c2c2c; }
 }
 .card .thumb img {
+  /* Absolutely positioned, filling the anchor — the img must NOT be an
+     in-flow child. The round-3 freeze (the anchor's inline aspect-ratio
+     fixes the box height) had a hole: aspect-ratio is a PREFERENCE, and
+     an in-flow img's intrinsic size is the anchor's min-content floor,
+     so a loaded image TALLER than its reserve forced the anchor taller
+     (a Wallpapers.com card whose listing ratio rounds wider than the
+     real one, or any 4:3-fallback portrait). Each such growth rebalances
+     the CSS multi-column masonry, so the visual order changed while the
+     DOM order did not — the v5.8/v5.10 late reshuffles, where the top row
+     changed once between settle and +60s and then came back as the
+     height vector completed. With the img absolute, the anchor has no
+     in-flow children at all (badges and placeholder are absolute too;
+     the meta row sits outside the anchor, in the card), so its height
+     is purely the aspect-ratio in every state:
+     unloaded, thumb, full, failed. The visual result is identical —
+     the img already filled the anchor exactly via 100%/100% +
+     object-fit: contain. */
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   display: block;
