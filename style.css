@@ -1090,11 +1090,20 @@ footer p { margin: 0; max-width: 80ch; }
    below pins the reserved slot to the full one-line height, so the
    empty text costs nothing. (On later searches the text persists from
    the previous search, so the reserved meter was already 33px — this
-   only ever bit the first search.) */
+   only ever bit the first search.)
+   ROUND 11: the round-9 min-height over-corrected by exactly the
+   margins. min-height sets the CONTENT height; the 2px + 10px margins
+   sit OUTSIDE it, so calc(1.32rem + 12px) made the hidden slot
+   33px + 12px = 45px against a 33px shown meter — the grid jumped UP
+   12px the moment the meter appeared, partially masking the filter
+   row's +47px drop (net first-search shift +35px, observed ~+29px in
+   the v5.14 browser test, busy value approximate). The min-height is
+   now exactly one line (1.32rem); the margins bring the total to 33px
+   on both sides. Same correction in the phone rung below. */
 main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)) #preload-meter[hidden] {
   display: inline-flex;
   visibility: hidden;
-  min-height: calc(1.32rem + 12px);
+  min-height: 1.32rem;
 }
 @media (max-width: 640px) {
   /* Narrow widths: the shown meter wraps to two text lines (text + bar
@@ -1114,9 +1123,12 @@ main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)) #pre
      one line while loading and grows to two the moment the target is
      reached: a ~21px async shift on a settled grid. The rung now runs
      to 640px, past the Paused text's one-line breakpoint (~605px at
-     7px/char); above that every meter state fits one line. */
+     7px/char); above that every meter state fits one line.
+     ROUND 11: same margins correction as the base rung — min-height is
+     exactly two lines (2.64rem); the 12px margins sit outside it, so
+     the hidden total is 54px, matching the shown two-line meter. */
   main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)) #preload-meter[hidden] {
-    min-height: calc(2.64rem + 12px);
+    min-height: 2.64rem;
   }
 }
 .preload-meter-bar {
@@ -1150,8 +1162,19 @@ main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)) #pre
    Loaded (the "insta view loaded wallpapers" button), Not ready, All.
    Same ghost-toggle language as the Favorites toggle. Shown only in the
    search view with a preload target set; it appears when the user sets a
-   target or a search renders, never asynchronously mid-load, so it needs
-   no reserve (unlike the meter). */
+   target or a search renders, never asynchronously mid-load.
+   ROUND 11 (v5.14 browser test): the "never asynchronously" reasoning
+   was true for repeat searches but false for the FIRST one — the grid
+   (skeletons) is already showing when the row appears at settle, so it
+   pushed the grid down by its full height (~47px). The row now has the
+   same hidden-but-reserved slot as the meter and the top load-more row:
+   when the grid has cards/skeletons it occupies its natural height even
+   while hidden, so showing it moves nothing. Natural height, not a
+   min-height number — the buttons' text (counts) changes the width, not
+   the height, so hidden == shown by construction at every width where
+   the row fits one line (desktop, and 412px — see AY5). Search-only:
+   no reserve in Favorites or Trending (the row never shows there), and
+   none over an empty state (no cards/skeletons to gate on). */
 .loaded-filter {
   display: flex;
   flex-wrap: wrap;
@@ -1159,6 +1182,10 @@ main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)) #pre
   margin: 2px 0 10px;
 }
 .loaded-filter[hidden] { display: none; }
+main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)):not(:has(#tab-trending.active)) .loaded-filter[hidden] {
+  display: flex;
+  visibility: hidden;
+}
 .filter-btn {
   padding: 6px 12px;
   border: 1px solid var(--border-strong);

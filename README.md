@@ -326,7 +326,73 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.14 (round 10 — the four issues, 2026-11-16 — unreleased)
+## Changes in v5.15 (round 11 — the two browser findings, 2026-11-16 — NOT YET PUSHED)
+
+- **The first-search shift is fixed**: the v5.14 browser test showed the
+  grid still jumping ~+29px on the FIRST search after page load (0px on
+  repeats), and the bug hunt found it was two bugs, not one. (1) The
+  filter row (Loaded / Not ready / All) had no reserve at all — the
+  round-10 reasoning ("it appears on search render, never
+  asynchronously") is true for repeat searches but false for the first
+  one, when the grid is already showing skeletons and the row appears
+  under it, pushing the grid down by its full height (~47px). It now
+  has the same hidden-but-reserved slot as the meter and the top
+  load-more row: natural height, gated on grid cards/skeletons, never
+  in Favorites or Trending, none over an empty state. (2) The meter
+  reserve OVER-reserved by exactly 12px — the round-9
+  `min-height: calc(1.32rem + 12px)` double-counted the margins
+  (min-height is a CONTENT height; the 12px margins sit outside it),
+  so the hidden slot was 45px against a 33px shown meter and the grid
+  jumped UP 12px when the meter appeared, partly masking the filter
+  row's drop. The min-heights are now bare 1.32rem / 2.64rem. Net
+  first-search shift after both fixes: 0px, by measurement.
+- **"Ready" now means what it says**: the v5.14 browser test caught
+  the meter reading "Ready · 50 wallpapers" at 50/100 loaded, with
+  the Loaded count still climbing after — "Ready" meant the preload
+  pump's queue drained, not that everything was loaded. It now means
+  NO card in the current set is still loading (loaded + settled-failed
+  == total); while the observer is still upgrading cards, the meter
+  honestly stays on "Preloading…". Failed and "Preview only" cards
+  are settled, not loading, so they never block Ready, and Paused
+  promotes to Ready if the observer finishes everything while the
+  pump is paused. The meter's count is now the GRID's loaded count
+  and bytes (pump + observer, no per-batch reset), so it agrees
+  exactly with the filter row's Loaded count instead of contradicting
+  it. The phase definitions are documented at the `preloadPhase`
+  declaration in app.js.
+- **Debugger pass (2 fixes, both stale-counts bugs at the seam)**:
+  (1) during a new search's busy phase the meter and the filter row
+  showed the OLD grid's numbers over the skeletons ("Preloading… 1
+  wallpaper · 512 MB", "Loaded (1)" for cards that were gone) — the
+  search reset re-cached the old counts and nothing refreshed them
+  after the skeletons replaced the cards; the counts are now
+  refreshed the moment the skeletons land. (2) A re-render that
+  drops loaded cards (sort/ratio change) left the pump painting the
+  pre-render count, so the meter stuck on the dropped cards' numbers
+  while the filter row showed the true ones — the counts are now
+  refreshed at the top of `restartPreload`, before the pump runs.
+  Verified clean with the debugger's own measurements: the shift
+  agent's meter arithmetic (33.12px / 54.24px, hidden == shown on
+  both rungs), the meter texts against the reserve at 412px and
+  481–640px, every cache path, every phase transition, and the
+  per-batch budget (Load more after Paused still works).
+- **Optimizer pass (1 taken)**: the Ready agent's `_img` cache only
+  covered `buildCard` — every new search takes the full-rebuild path,
+  which never set it, so each counts walk paid one querySelector per
+  card (400 calls over a 20-card pump run, measured in the QA shim).
+  The full rebuild now sets `cards[i]._img`, and the drop loop reads
+  it first. The harness fix that came with it: test-opt's `parseCard`
+  was setting `_img` for free on every parsed card, so the "0 queries
+  while pumping" check passed vacuously — it no longer does, and the
+  check is now a real guard (400 queries on unfixed code, 0 on
+  fixed). Verified clean with numbers: parallel pages still ~152ms,
+  growing render still beats rebuild (12.3ms vs 39.1ms), Gelbooru
+  no-key = 0 fetches, and the live-search summary shows Wallhaven at
+  96 items (the round-10 slice change working).
+- QA harness 509 checks (481 + 8 first-search shift + 10 Ready state
+  + 5 debugger + 5 optimizer), optimizer all green.
+
+## Changes in v5.14 (round 10 — the four issues, 2026-11-16 — pushed as 8e5cba95)
 
 - **Danbooru cards no longer fail outright**: a card whose preview is
   showing but whose full-size upgrade times out now keeps the preview
