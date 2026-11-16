@@ -1108,6 +1108,15 @@ function markImageFailed(img, reason) {
 function imgLoaded(img) {
   const w = img.naturalWidth, h = img.naturalHeight;
   if (!w || !h) return;
+  // The image arrived: stop the loading pulse on the anchor (see
+  // .card .thumb in style.css) — before it loads, the box is a pulsing
+  // dark panel instead of a flat black void, so a slow thumb reads as
+  // "loading" rather than "broken". The class is added on the FIRST load
+  // (thumb) and never removed; a later src swap (thumb -> full) keeps
+  // it. (A card that fails outright never gets it — the failure
+  // placeholder covers the anchor, pulse and all.)
+  const anchor = img._anchor || img.closest("a.thumb");
+  if (anchor) anchor.classList.add("img-loaded");
   // The box NEVER changes here: the anchor keeps the aspect-ratio it was
   // rendered with, even when the loaded image's natural size differs from
   // the reserve (a size-unknown card keeps its 4:3 box; a listing-ratio

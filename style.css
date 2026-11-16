@@ -493,8 +493,21 @@ code {
   overflow: hidden;
   background: #000;
   line-height: 0;
+  /* While the image hasn't loaded, the box pulses dark grey instead of
+     sitting flat black: on the Pages site a thumb can take ~10s over a
+     public proxy, and a black void reads as a broken image. The pulse
+     stops the moment the first load lands (imgLoaded in app.js adds
+     .img-loaded to the anchor); letterbox bars stay flat black after
+     that. Background-color only, so it can never move the card; the
+     reduced-motion rule below forces it static for those users. */
+  animation: thumb-loading 1.3s ease-in-out infinite;
   /* The anchor's own aspect-ratio (inline style) fixes the box height —
      images, placeholders and failures never move it (see app.js). */
+}
+.card .thumb.img-loaded { animation: none; background: #000; }
+@keyframes thumb-loading {
+  0%, 100% { background-color: #171717; }
+  50% { background-color: #2c2c2c; }
 }
 .card .thumb img {
   width: 100%;

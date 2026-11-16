@@ -313,7 +313,36 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.8 (round 4 — bug hunt on the v5.7 browser test, 2026-11-16 — unreleased)
+## Changes in v5.9 (round 5 — bug hunt on the v5.8 browser test, 2026-11-16 — unreleased)
+
+- **Late reshuffle — investigated, no app mechanism exists**: the v5.8
+  browser test saw the top-row composition change once between a
+  "settled" capture (only 5 images decoded) and a minute later, then
+  stabilize. Traced from the code: a search renders exactly once
+  (all sources awaited, then one `renderResults`), no automatic
+  re-render exists after that (the proxy probe never re-renders; the
+  pump and observer only swap image sources), and no post-render path
+  can change a card's height — the anchor ratio is frozen, everything
+  else in the card is absolutely positioned, and the only style writes
+  after render are image visibility and the meter fill. So neither a
+  remaining height-change path nor late-arriving results can explain
+  it; the remaining explanations are a test artifact (scroll position
+  at capture time) or a browser-internal balancing quirk, and no
+  proportionate fix exists inside the app's architecture — replacing
+  CSS multi-column masonry, or holding the first cards until every
+  source reports, would both be worse than the one observed, self-
+  stabilizing event. No code change for it.
+- **Loading cards pulse instead of sitting black**: on the Pages site a
+  thumb can take ~10s over a public proxy, and until it lands the card
+  is a flat black void that reads as a broken image. The anchor now
+  pulses dark grey (`thumb-loading`, background-color only, same 1.3s
+  cadence as the skeletons) until the first load lands, when
+  `imgLoaded` adds `.img-loaded` and the pulse stops; letterbox bars
+  stay flat black after that. Reduced-motion users get the static
+  black via the existing global rule.
+- QA harness 268 checks (260 + 8 new Group Z), optimizer all green.
+
+## Changes in v5.8 (round 4 — bug hunt on the v5.7 browser test, 2026-11-16 — pushed as 1855dce4)
 
 - **Status-pill shift fixed**: while results loaded, the whole grid
   shifted down ~48px once because the status-pill area grew from one
@@ -321,8 +350,8 @@ the ↻ Refresh button forces a fresh load.
   results rendered. The row now reserves its final height from the
   busy phase on (`status-reserved`, set for 6+ sources in the same
   block as the busy pill), so it is already two rows tall before the
-  first source reports in. The reserve is viewport-aware — about 8
-  pill lines on phones, off entirely above 3000px where the pills fit
+  first source reports in. The reserve is viewport-aware — about 10
+  pill lines on phones (measured at 412px), off entirely above 3000px where the pills fit
   one row — and it never applies to Trending or Favorites, whose
   pills fit one row. With 5 or fewer sources there is no reserve
   either, so there is no dead space to pay for in those views.
