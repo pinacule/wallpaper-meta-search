@@ -8,14 +8,10 @@ import http from "node:http";
 import { Readable } from "node:stream";
 
 const PORT = 8787;
-// A stalled upstream (Zerochan and Wallpapers.com both do this) must not tie
-// up a proxy connection forever. The browser-side probe gives up at 15 s;
-// this bounds the proxy at 20 s and a closed browser request aborts the
-// upstream download immediately (see res.on("close") below).
-const UPSTREAM_TIMEOUT_MS = 20000;
 const ALLOWED = [
   /^https:\/\/wallhaven\.cc\/api\//,
   /^https:\/\/safebooru\.org\/index\.php\?page=dapi/,
+  /^https:\/\/gelbooru\.com\/index\.php\?page=dapi/,
   /^https:\/\/wall\.alphacoders\.com\/api2\.0\//,
   /^https:\/\/wallpapers\.com\//,
   /^https:\/\/wallpapercave\.com\//,
@@ -47,17 +43,8 @@ const server = http.createServer(async (req, res) => {
     res.end("Usage: /?url=<allowed api/search url>\n");
     return;
   }
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
-  // The browser aborts probes it no longer needs (15 s timeout, re-render,
-  // closed tab). Abort the upstream fetch then too, instead of downloading a
-  // multi-MB file for an image that will never be shown.
-  res.on("close", () => {
-    clearTimeout(timeout);
-    controller.abort();
-  });
   try {
-    const upstream = await fetch(target, { signal: controller.signal, headers: { "User-Agent": "wallpaper-meta-search/0.1" } });
+    const upstream = await fetch(target, { headers: { "User-Agent": "wallpaper-meta-search/0.1" } });
     // Forward the caching headers (and length/type) so the browser can
     // cache proxied images properly — without them every re-render
     // re-downloaded every thumb through the proxy. Only these are
@@ -81,7 +68,6 @@ const server = http.createServer(async (req, res) => {
       res.end(Buffer.from(await upstream.arrayBuffer()));
     }
   } catch (err) {
-    if (res.headersSent) { res.destroy(); return; }
     res.writeHead(502, { "Content-Type": "text/plain" });
     res.end(`Upstream fetch failed: ${err.message}\n`);
   }

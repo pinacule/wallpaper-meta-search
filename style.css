@@ -649,6 +649,31 @@ code {
   border-color: rgba(255, 93, 115, .55);
   background: rgba(255, 93, 115, .12);
 }
+/* Tag chips under the links row, inside the meta overlay: revealed with
+   the action row on hover, always visible on touch (the @media
+   (hover: none) rule above covers every button in .meta). Small and
+   muted so a row of them reads as metadata, not navigation; the gold
+   border on hover is the same cue the links use. */
+.card .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.card .tag-chip {
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-soft);
+  color: var(--muted);
+  font: inherit;
+  font-size: .78rem;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: border-color .15s ease, color .15s ease, background .15s ease;
+}
+.card .tag-chip:hover { border-color: var(--accent); color: #fff; background: var(--accent-soft); }
+.card .tag-more {
+  padding: 2px 4px;
+  color: var(--muted);
+  font-size: .78rem;
+  line-height: 1.5;
+}
 /* Favorites toggle in the View group. */
 .favs-toggle {
   padding: 6px 12px;
@@ -762,6 +787,17 @@ code {
 }
 .btn-ghost:hover { background: var(--accent-soft); }
 .btn-ghost:active { transform: translateY(1px); }
+
+/* Load more (round 8): one button below the grid, centred, in the
+   existing ghost-button language — gold border, no fill, no gradient.
+   The row's margin is the spacing (the button's own 18px top margin is
+   for in-panel use, so it is zeroed here); a disabled button is visibly
+   dimmed, not hidden, so the end of the results is explicit. */
+.load-more-row { text-align: center; margin: 20px 0 6px; }
+#load-more { margin-top: 0; }
+#load-more[hidden] { display: none; }
+#load-more:disabled { opacity: .5; cursor: default; }
+#load-more:disabled:hover { background: transparent; }
 
 /* ---------- Footer ---------- */
 footer {
@@ -986,12 +1022,35 @@ footer p { margin: 0; max-width: 80ch; }
    test's run-2 ~17px drop on settle (busy baseline wobble covers the
    gap). Reserve its slot whenever the grid has cards (Search or
    Trending): a hidden meter still occupies its space, so showing or
-   hiding it moves nothing. No reservation on first load (empty state,
-   no cards) or in Favorites (its toggle is active; Favorites never
-   preloads) — no dead space there. */
-main:has(#results .card):not(:has(#favs-toggle.active)) #preload-meter[hidden] {
+   hiding it moves nothing. The gate must also cover the busy phase:
+   during it #results holds skeletons, not cards, so the old
+   `#results .card` gate left the slot absent until the first cards
+   rendered — the grid sat 33px high through the whole search and
+   dropped exactly the meter's height the frame results arrived (v5.11
+   browser test: busy y=760, settled y=793). Skeletons are inserted
+   synchronously with the busy pill and replaced by the cards, so the
+   slot is now reserved continuously from busy through settled. No
+   reservation on first load (empty state, no cards or skeletons) or in
+   Favorites (its toggle is active; Favorites never preloads) — no dead
+   space there. */
+main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)) #preload-meter[hidden] {
   display: inline-flex;
   visibility: hidden;
+}
+@media (max-width: 480px) {
+  /* Phones: the shown meter wraps to two text lines at 412px (text +
+     bar are ~458px of content against a 384px line, and flex shrink
+     leaves the text ~257px wide — the "Preloading…" line breaks after
+     "MB /"), ~54px against the one-line 33px the empty reserved meter
+     would otherwise occupy — so the grid would still jump ~21px when
+     preloading starts at settle. Reserve the wrapped height: 2 lines
+     of 1.32rem (0.88rem at line-height 1.5) + 12px margins. Same
+     estimate class as the status phone rung: right to about a line
+     either way; a one-line shown meter leaves ~7px dead space, a
+     three-line one a smaller residual shift. */
+  main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)) #preload-meter[hidden] {
+    min-height: calc(2.64rem + 12px);
+  }
 }
 .preload-meter-bar {
   width: 140px;

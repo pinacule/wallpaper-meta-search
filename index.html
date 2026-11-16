@@ -53,6 +53,7 @@
         <div class="group-controls chip-group" role="group" aria-labelledby="group-sources-label" aria-label="Sources with inline results">
         <label class="chip"><input type="checkbox" class="source" value="danbooru" checked><span class="chip-dot" aria-hidden="true"></span>Danbooru</label>
         <label class="chip"><input type="checkbox" class="source" value="safebooru" checked><span class="chip-dot" aria-hidden="true"></span>Safebooru</label>
+        <label class="chip"><input type="checkbox" class="source" value="gelbooru" checked><span class="chip-dot" aria-hidden="true"></span>Gelbooru</label>
         <label class="chip"><input type="checkbox" class="source" value="wallhaven" checked><span class="chip-dot" aria-hidden="true"></span>Wallhaven</label>
         <label class="chip"><input type="checkbox" class="source" value="alphacoders" checked><span class="chip-dot" aria-hidden="true"></span>AlphaCoders</label>
         <label class="chip"><input type="checkbox" class="source" value="wallpapersdotcom" checked><span class="chip-dot" aria-hidden="true"></span>Wallpapers.com</label>
@@ -160,13 +161,19 @@
         <label class="settings-field">Wallhaven API key <span class="hint">(optional — NSFW only; from your Wallhaven account &rarr; API; stored locally)</span>
           <input id="wh-key" type="text" autocomplete="off">
         </label>
+        <label class="settings-field">Gelbooru API key <span class="hint">(optional — free account at gelbooru.com; without it Gelbooru is skipped)</span>
+          <input id="gb-key" type="text" autocomplete="off">
+        </label>
+        <label class="settings-field">Gelbooru user ID <span class="hint">(your account&rsquo;s numeric ID — see your Gelbooru account page)</span>
+          <input id="gb-user" type="text" autocomplete="off" inputmode="numeric">
+        </label>
       </div>
     </details>
 
     <section class="site-links" aria-label="Search on other sites">
       <div class="site-links-head">
         <h2>Also search on</h2>
-        <p>WallpaperAccess and Gelbooru can&rsquo;t show results here — one click opens their search for the same query.</p>
+        <p>WallpaperAccess can&rsquo;t show results here — one click opens its search for the same query.</p>
       </div>
       <div id="site-buttons"></div>
     </section>
@@ -216,6 +223,10 @@
         <p class="hint">Tip: one or two words work best, e.g. <em>cyberpunk 2077</em> or <em>neon</em>.</p>
       </div>
     </section>
+
+    <div class="load-more-row">
+      <button type="button" id="load-more" class="btn-ghost" hidden>Load more</button>
+    </div>
   </main>
 
   <footer>

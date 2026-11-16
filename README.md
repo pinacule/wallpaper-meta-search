@@ -29,9 +29,9 @@ Then open `http://localhost:8090/`. Or just open `index.html` in a browser
 | Wallhaven | API via proxy chain, inline | Works — best source; see "Why some sources need a proxy" |
 | Safebooru | API via proxy chain, inline | Works |
 | AlphaCoders | HTML search page via proxy chain, inline | Works, no API key — the documented API (`api2.0/get.php`) is dead (nginx 404 on every variant) |
-| Wallpapers.com | HTML search page via proxy chain, inline | Works — 40 items per search (no resolution shown) |
-| WallpaperCave | HTML search page via proxy chain, inline | Works via local proxy (40 items); via public proxies it flips between working and failing in bursts — see below |
-| Zerochan | HTML search page via proxy chain, inline | Works via local proxy (38 items); via public proxies Zerochan's bot-block ("Crawlers are not permitted") 503s corsfix in bursts — see below |
+| Wallpapers.com | HTML search page via proxy chain, inline | Works — up to 80 items per search (no resolution shown) |
+| WallpaperCave | HTML search page via proxy chain, inline | Works via local proxy (up to 50 items); via public proxies it flips between working and failing in bursts — see below |
+| Zerochan | HTML search page via proxy chain, inline | Works via local proxy (up to 80 items); via public proxies Zerochan's bot-block ("Crawlers are not permitted") 503s corsfix in bursts — see below |
 | WallpaperAccess | Link only | Cloudflare 403s every fetch, direct and via proxy |
 | Gelbooru | Link only | Its API returns 401 anonymously — needs an account API key |
 | Google Images | Link only | No free search API |
@@ -45,8 +45,9 @@ chain, in order:
 1. **Local proxy** (`proxy/server.mjs`, port 8787) — only when the page is
    served over http (localhost). Started automatically by `start.sh` /
    `start.bat`. This is the reliable path: every source works through it,
-   including Zerochan and WallpaperCave — and since v5 the card IMAGES go
-   through it too when it's up (see "Results"). If it's not running, a
+   including Zerochan and WallpaperCave — and the card IMAGES from those
+   two go through it too when it's up (every other source's images load
+   direct — see "Results"). If it's not running, a
    sticky amber banner pinned to the top of the page says so, in plain
    words — start the proxy and reload.
 2. **Your own Cloudflare Worker** (`worker/`) — paste its URL in Settings.
@@ -97,8 +98,12 @@ per-proxy errors.
 - **Min. resolution** — 1920×1080+, 2560×1440+, 3440×1440+ (ultrawide).
   Danbooru filters server-side; Safebooru paginates until it has enough.
   Sites that don't show a resolution are never hidden by the filter. When
-  the filter hides matches, the status line says how many (Danbooru's count
-  is exact for the whole database; Safebooru's is "of N checked").
+  the filter hides matches, the status line says how many — but only
+  Danbooru and Safebooru report a count (Danbooru's is exact for the whole
+  database; Safebooru's counts only the pages actually fetched). Wallhaven
+  and the scraped sites drop below-filter matches silently, with no count —
+  and the pill never says which kind a count is: both read the same
+  ("N below WxH — lower the filter to see them").
 - **Show** — how many wallpapers load per search: **50**, **100** (default),
   **150**, **200**, or **All**. The limit applies after merging, sorting and
   the other filters, so it counts the wallpapers that would actually show —
@@ -106,8 +111,9 @@ per-proxy errors.
   results the status line says how many ("N more — raise the limit to see
   them"). Favorites always show all saved items, whatever the limit says.
   The choice is remembered in the browser (localStorage `wms.limit`). The
-  per-source fetch caps (40 per source) are unchanged — the limit caps what
-  is rendered, not what is fetched.
+  per-source fetch caps (Danbooru and Safebooru 100, Wallhaven 48,
+  Wallpapers.com, AlphaCoders and Zerochan 80, WallpaperCave 50) are
+  unchanged — the limit caps what is rendered, not what is fetched.
 - **Device / ratio** — All ratios (default), **PC — landscape**, **PC —
   ultrawide 21:9**, or **Phone — portrait**. Classified from each item's own
   width/height: landscape is width > height, ultrawide is width/height ≥
@@ -136,7 +142,7 @@ per-proxy errors.
     |---|---|---|
     | Danbooru | ✅ Works, no key — 1,788 explicit posts, 209 at 1920×1080+ | counts endpoint + posts call, all returned posts rated `e` |
     | Wallhaven | ❌ Needs an API key — anonymous `purity=001` returns 0 results for every query (even "anime" and an empty query); the docs say "NSFW wallpapers are blocked to guests". Paste a key in Settings (free, from your Wallhaven account → API, stored only in this browser) and NSFW search works; without one the status pill says "needs API key" instead of showing 0. **The key path is untested** — no key was available when this was built. |
-    | Safebooru | Safe-only site — returns nothing in NSFW mode (all 100 "code geass" posts rated `general`); the pill says "no NSFW here" |
+    | Safebooru | Safe-only site — returns nothing in NSFW mode (all 100 "code geass" posts rated `general`); the pill says "0 found · safe-only site" |
     | Zerochan, AlphaCoders, Wallpapers.com, WallpaperCave | No purity filter — NSFW mode changes nothing; they return whatever their public search page shows |
   - Verified counts for "code geass": Danbooru safe 8,176 vs mixed 10,656
     vs explicit 1,788 posts; Wallhaven purity 100: 375 vs 110: 454 results
@@ -201,7 +207,9 @@ results instantly — no re-search:
 
 The grid is a masonry collage: every image keeps its original aspect ratio
 (no 16:9 cropping) and is shown at full resolution in the end — but it
-loads thumbnail-first. The small thumbnail (tens of KB) appears in under a
+loads thumbnail-first. (Wallpapers.com cards are the exception: they keep
+their 900w thumbnail, since their multi-MB full files are never probed
+in-card.) The small thumbnail (tens of KB) appears in under a
 second, and the full-resolution image is swapped in only when the card
 nears the viewport, so a search never has ~200 multi-MB files in flight at
 once. The box height is fixed from the known dimensions — or from the
@@ -209,10 +217,12 @@ listing's aspect ratio when the pixels are unknown — on the card itself,
 and the image fills it with `object-fit: contain` — so nothing ever jumps
 while images arrive, and a failed image becomes a same-size "couldn't load"
 placeholder (its Source page / Full image links still work) instead of
-disappearing or collapsing. The one exception: an item whose listing stated
-neither dimensions nor ratio gets its box corrected once, from the loaded
-image's own size — and when the full image loads, its real dimensions
-replace the "size unknown" badge.
+disappearing or collapsing. The box is never corrected after render: a
+size-unknown card keeps its 4:3 box and the image letterboxes inside it,
+whatever the loaded image's natural size. What does change is the badge —
+when the full image loads, its real dimensions replace "size unknown"
+(except on Wallpapers.com cards, which are thumb-only and never load the
+full in-card, so their badge stays "size unknown").
 If a full image stalls (see below), it times out after 15 s and falls
 through the alternates. Clicking an image opens the full image in a new
 tab — the image itself is the link, and that never changes. The Source /
@@ -245,7 +255,7 @@ fetch up front while you wait after a search: once results render, the
 app eagerly upgrades full-res images in display order until that much has
 loaded. Type any amount — 0.5, 2.5, 12 — or tap a preset chip (Off / 0.5 /
 1 / 2 / 5 GB); empty, 0 or a negative number means Off, and anything over
-50 GB clamps to 50. While preloading runs, a progress line under the
+50 GB clamps to 50. While preloading runs, a progress line above the
 status pills shows "Preloading… N wallpapers · X / Y GB" with a thin
 bar; it only appears while a search is preloading toward a set target,
 and hides when preload is Off or the target is reached. This is a preload
@@ -261,8 +271,9 @@ reads "≈": Danbooru and Wallhaven report an exact `file_size` per item
 those are estimated at 0.5 bytes per pixel from the known dimensions
 (observed range across real files: ~0.1 for a flat Danbooru jpg to ~1.4
 for a big AlphaCoders PNG), or a flat 5 MB when even the dimensions are
-unknown. A successful upgrade is charged once, at the full file's cost,
-even if a smaller alternate is what actually loaded; failed or stalled
+unknown. A successful upgrade is charged once, at the displayed image's
+cost — the ~850px sample for huge files, the full file otherwise — even
+if a smaller alternate is what actually loaded; failed or stalled
 probes charge nothing (their partial bytes are uncounted). Preloading
 runs one probe at a time so two of the three probe slots stay free for
 scrolling, skips thumb-only (Wallpapers.com) cards, and does not run in
@@ -306,14 +317,83 @@ Wallhaven color swatch applies, and the source checkboxes are respected
 trending cards exactly like search cards, and switching back to the
 Favorites view remembers whether you came from Trending or Search.
 
-Under the tab, a row of **popular-search chips** (code geass, catgirl,
+Under the tab, a row of **popular-search chips** (landscape, catgirl,
 cyberpunk 2077, anime, minimal, dark aesthetic, nature, space, city
 night, mountains, neon, abstract) runs that term as a normal search:
 back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.11 (round 7 — the transient top-row reshuffle, 2026-11-16 — unreleased)
+## Changes in v5.12 (round 8 — sources, tags, load more, 2026-11-16 — unreleased)
+
+- **The +33px busy→settled jump is fixed**: it was the preload-meter
+  slot, not the status pills. The round-6 meter reservation was gated on
+  `main:has(#results .card)` — during the busy phase `#results` holds
+  skeletons, not cards, so the slot was absent (0px) until the first
+  cards rendered, and the grid dropped exactly the meter's height the
+  frame results arrived (v5.11 browser test: busy y=760, settled y=793).
+  The gate now lists skeletons too, so the slot is reserved continuously
+  from busy through settled. A phone rung reserves the wrapped (two-line)
+  meter height at ≤480px, where the shown meter breaks to two lines.
+- **Gelbooru is an 8th inline source** (was link-only): same dapi shape
+  as Safebooru, with a free account's `api_key` + `user_id` (Settings
+  fields next to the Wallhaven key). Without a key it throws before any
+  fetch, so the pill says "needs API key" instead of a 401 or a
+  misleading "0 found". Purity uses Danbooru-style `rating:` metatags.
+  Max fetch per search is now 638 items (was 538). Live use needs a free
+  Gelbooru account — no key exists yet, so the adapter is verified by
+  code + harness only.
+- **Tags**: Danbooru, Safebooru, Wallhaven and Gelbooru items now carry
+  their tags (capped at 12 stored, 6 chips shown + a muted "+N").
+  Chips sit in the meta overlay under the links row — hover-reveal on
+  desktop, always visible on touch — and clicking one searches for that
+  tag. Scrapers carry no tags. Every chip is escaped; a tag is untrusted
+  API text, never markup.
+- **Wallhaven huge files get a sample**: Wallhaven's API offers no
+  mid-size sample — its thumbs are fixed sizes regardless of the
+  original (verified live: `large` is 432px on the long side even for a
+  7680×4320 file). For huge files `displayFull` is now `thumbs.large`,
+  the thumb itself, so the grid never stalls past the 15 s probe on a
+  multi-MB original; the Full image link still opens the original, and
+  the original stays the first fallback candidate.
+- **WallpaperCave searches up to 3 categories** (was 1): the top 3
+  categories matching any query word are fetched concurrently and
+  interleaved, so one full category can't fill the 50-item cap alone.
+  0–1 matches keep the old single-category path exactly.
+- **Wallpapers.com badge shows the ratio**: the listing thumb's
+  dimensions are the full image's real ratio, so the badge now shows the
+  GCD-reduced ratio ("16:9", "300:169") instead of "size unknown"
+  forever. A ratio badge still upgrades to real pixels if a full ever
+  loads.
+- **Hidden counts for every source**: Wallhaven reports an exact count
+  (`meta.total` without the min-res filter minus with it — verified live:
+  "landscape" 50,889 − 42,383 = 8,506 hidden); the scrapers report a
+  checked count among the pages actually fetched, marked with a "+"
+  (items with unknown dimensions are never counted, so Wallpapers.com
+  is always 0). The pill distinguishes them: exact shows the number,
+  checked shows "3+ below 1920×1080".
+- **Load more**: a button below the grid fetches the next page from
+  every source that has one (Danbooru page, Safebooru pid, Wallhaven
+  page, AlphaCoders page, Wallpapers.com paginator link, Zerochan ?p=)
+  and raises the render cap by 100 per click. A failed source keeps its
+  cursor for retry next click. WallpaperCave has no pagination, so it
+  contributes nothing more. Existing cards are moved, never rebuilt, so
+  the grid top doesn't move; preload counters are untouched, and a new
+  search cancels an in-flight load and resets the cursors.
+- README cleanup: 9 contradictions between the README and the code
+  fixed (per-source caps, the meter's position, the preload charge, the
+  Trending chips list, and more).
+- QA harness 403 checks (302 + 8 Cave + 6 Wallpapers.com + 10 tags +
+  6 Wallhaven + 6 pill shift + 12 Gelbooru + 13 hidden counts +
+  32 load more + 8 debugger), optimizer harness fixed (it had been
+  crashing on a stale default directory since v5) and all green, with 6
+  new Phase 8 regression guards. The debugger also fixed 6 real bugs:
+  Gelbooru load-more fired 3 fetches per click, three scraper load-more
+  paths forgot their hidden counts, the pill lost its checked-scope "+"
+  on rebuild, and the Load more button could flash over skeletons
+  during a new search.
+
+## Changes in v5.11 (round 7 — the transient top-row reshuffle, 2026-11-16 — pushed as 08d939fa)
 
 - **The round-3 freeze had a hole**: `aspect-ratio` is a preference, and an
   in-flow `img`'s intrinsic size is the anchor's min-content floor — so a
@@ -574,8 +654,7 @@ the ↻ Refresh button forces a fresh load.
 - **Wallpapers.com cards are thumb-only**: their multi-MB full files are
   never probed in-card (the card keeps the thumbnail; the "Full image"
   button still works). Consequence: a Wallpapers.com badge can no longer
-  fill in from a full load — it stays "size unknown" until the full image
-  is opened directly.
+  fill in from a full load — it stays "size unknown".
 - The local proxy gives up on an upstream fetch after **20 s** and aborts
   the upstream download when the browser request closes.
 

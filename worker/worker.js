@@ -10,6 +10,7 @@
 const ALLOWED = [
   /^https:\/\/wallhaven\.cc\/api\//,
   /^https:\/\/safebooru\.org\/index\.php\?page=dapi/,
+  /^https:\/\/gelbooru\.com\/index\.php\?page=dapi/,
   /^https:\/\/wall\.alphacoders\.com\/api2\.0\//,
   // HTML search pages used by the scraping adapters (adapters-extra.js):
   /^https:\/\/wallpapers\.com\//,

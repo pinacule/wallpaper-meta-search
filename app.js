@@ -1,8 +1,10 @@
 // Wallpaper Meta-Search — one query, several wallpaper sources, no server.
 // Direct: Danbooru (sends CORS *). Via the proxy chain (proxy-client.js):
 // Wallhaven, Safebooru, and the HTML-scraping adapters in adapters-extra.js.
-// Gelbooru is link-only: its API returns 401 for anonymous requests
-// (verified 2026-11-15 — the site is up, the dapi needs an account key).
+// Gelbooru is inline when a free account's API key + user ID are set in
+// Settings — its API returns 401 for anonymous requests (verified
+// 2026-11-15), so without a key the adapter throws before fetching and
+// the status pill says "needs API key" instead of showing 0.
 // WallpaperAccess is link-only: Cloudflare 403s every fetch (verified 2026-11-15).
 "use strict";
 
@@ -129,7 +131,6 @@ function proxiedImageUrl(u) {
 // Sites without inline results: open their own search in a new tab.
 const SITE_LINKS = [
   ["WallpaperAccess", (q) => `https://wallpaperaccess.com/search?q=${encodeURIComponent(q)}`],
-  ["Gelbooru", (q) => `https://gelbooru.com/index.php?page=post&s=list&tags=${encodeURIComponent(formatQueryFor("gelbooru", q))}`],
   ["Wallhaven", (q) => `https://wallhaven.cc/search?q=${encodeURIComponent(q)}`],
   ["Google Images", (q) => `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(q + " wallpaper")}`],
 ];
@@ -185,6 +186,10 @@ function loadSettings() {
   updatePreloadMeter();
   const whKeyEl = staticEl("wh-key");
   if (whKeyEl) whKeyEl.value = localStorage.getItem("wms.whKey") || "";
+  const gbKeyEl = staticEl("gb-key");
+  if (gbKeyEl) gbKeyEl.value = localStorage.getItem("wms.gbKey") || "";
+  const gbUserEl = staticEl("gb-user");
+  if (gbUserEl) gbUserEl.value = localStorage.getItem("wms.gbUserId") || "";
   setWallColor(wallColor());
   updateProxyStatus();
 }
@@ -202,12 +207,17 @@ function saveSettings() {
   if (preloadEl) localStorage.setItem("wms.preload", String(preloadTarget()));
   const whKeyEl = staticEl("wh-key");
   if (whKeyEl) localStorage.setItem("wms.whKey", whKeyEl.value.trim());
+  const gbKeyEl = staticEl("gb-key");
+  if (gbKeyEl) localStorage.setItem("wms.gbKey", gbKeyEl.value.trim());
+  const gbUserEl = staticEl("gb-user");
+  if (gbUserEl) localStorage.setItem("wms.gbUserId", gbUserEl.value.trim());
 }
 
 // Content mode: "safe" (default), "mixed" (safe + suggestive) or "nsfw"
 // (explicit only). What each source does in NSFW mode is in the README's
 // purity table — Danbooru works anonymously, Wallhaven needs an API key,
-// Safebooru has nothing, the scraped sites have no filter at all.
+// Gelbooru needs an API key + user ID, Safebooru has nothing, the
+// scraped sites have no filter at all.
 let purityElCache = null;
 function purity() {
   // Static control, cached like the others (see resultsBox) — the value is
@@ -338,6 +348,25 @@ function passesDeviceRatio(r, mode = deviceRatio()) {
 // Short label for the ratio empty state ("No PC landscape wallpapers…").
 const RATIO_LABELS = { pc: "PC landscape", ultrawide: "ultrawide 21:9", phone: "phone portrait" };
 
+// Reduce an aspect ratio to lowest terms for the badge: a card whose pixel
+// size is unknown but whose ratio IS known (Wallpapers.com listing thumbs —
+// the thumbnail preserves the full image's aspect ratio) shows "16:9"
+// instead of "size unknown". The ratio is real; the pixels genuinely are
+// unknown, so the badge shows a ratio (with a colon), never a pixel size
+// (with a ×) that would pretend to know them. The loaded thumb's own
+// natural size is NOT used here: that is the 900w thumbnail's pixels, not
+// the full image's, and which variant loaded (900w high vs 300w thumb)
+// would change the number for the same wallpaper.
+function gcd(a, b) {
+  a = Math.abs(a); b = Math.abs(b);
+  while (b) { const t = a % b; a = b; b = t; }
+  return a || 1;
+}
+function ratioLabel(w, h) {
+  const g = gcd(w, h);
+  return `${w / g}:${h / g}`;
+}
+
 // Returns { data, via } — `via` names the proxy that served a proxied
 // request ("" for direct fetches). Callers keep the via with their own
 // result; see the note above about why it is never a shared global.
@@ -424,13 +453,41 @@ function pickBooruFile(fileUrl, sampleUrl) {
   return sampleUrl || fileUrl || null;
 }
 
+
+// Tags are display + click-to-search data, never ranking data: cap them
+// so a 40-tag Danbooru post doesn't bloat the result object, the card
+// HTML, or a Favorites snapshot. Non-strings and blanks are dropped.
+const MAX_TAGS = 12;
+function capTags(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const t of list) {
+    if (typeof t !== "string") continue;
+    const s = t.trim();
+    if (s) out.push(s);
+    if (out.length >= MAX_TAGS) break;
+  }
+  return out;
+}
+// Gelbooru credentials from Settings (both are required — the dapi 401s
+// without either). Read fresh on every call so a pasted key takes effect
+// immediately, like workerUrlSetting().
+function gelbooruCreds() {
+  const keyEl = staticEl("gb-key");
+  const userEl = staticEl("gb-user");
+  return {
+    key: keyEl ? keyEl.value.trim() : "",
+    userId: userEl ? userEl.value.trim() : "",
+  };
+}
+
 // --- Source adapters. Each returns [{ thumb, full, alts, page, width, height, source, date, score }].
 // `alts` is the ordered list of alternate URLs for the same image to try if
 // `full` fails to load (smaller versions from the same source — see the
 // image loader in app.js: loadFullImage/probeUrl). `date` is an ISO string where the API provides one (Danbooru
-// and Wallhaven via `created_at`), null otherwise. `score` is the source's
+// and Wallhaven via `created_at`, Gelbooru via `created_at`), null otherwise. `score` is the source's
 // popularity signal where one exists (Danbooru `score`, Wallhaven
-// `favorites`), null otherwise — Safebooru's dapi `score` is null ~88% of
+// `favorites`, Gelbooru `score`), null otherwise — Safebooru's dapi `score` is null ~88% of
 // the time and the scraped sites show no popularity number at all. The result
 // array also carries `.via` (which proxy served it, "" for direct) and, for
 // the boorus, `.hidden` — see the note at the top about why `via` is
@@ -480,7 +537,9 @@ const SOURCES = {
     let hiddenPromise = null;
     // Skipped for trending: counts of an order:rank query answer a
     // question nobody asked (and would cost two extra requests per load).
-    if (m && !trending) {
+    // Skipped for load more too: the count is a whole-database figure,
+    // unchanged by fetching another page — the initial value stands.
+    if (m && !trending && !opts.more) {
       hiddenPromise = (async () => {
         const [{ data: all }, { data: pass }] = await Promise.all([
           fetchJson(`https://danbooru.donmai.us/counts/posts.json?tags=${encodeURIComponent(baseTags)}`, false),
@@ -490,13 +549,24 @@ const SOURCES = {
       })().catch(() => 0);
     }
 
+    // Load more (round 8): opts.more fetches exactly one further page,
+    // starting at opts.startPage — the cursor the initial fetch returned
+    // (see nextCursor below). A more-batch takes the whole page (up to
+    // 200 posts), not the 100 target: the page is the natural batch, and
+    // the render cap (not the fetch) decides what shows.
+    const startPage = opts.startPage || 1;
+    const pageCount = opts.maxPages || BOORU_MAX_PAGES;
+    const target = opts.more ? BOORU_PAGE_SIZE : BOORU_TARGET;
     const out = [];
     let via = "";
-    for (let page = 1; page <= BOORU_MAX_PAGES && out.length < BOORU_TARGET; page++) {
+    let fetchedUpTo = startPage - 1; // last page actually fetched
+    let lastPageShort = false; // the last page came back short/empty: no more pages
+    for (let page = startPage; page < startPage + pageCount && out.length < target; page++) {
       const { data, via: v } = await fetchJson(
         `https://danbooru.donmai.us/posts.json?tags=${encodeURIComponent(fetchTags)}&limit=${BOORU_PAGE_SIZE}&page=${page}`, false);
       via = v;
-      if (!Array.isArray(data) || data.length === 0) break;
+      fetchedUpTo = page;
+      if (!Array.isArray(data) || data.length === 0) { lastPageShort = true; break; }
       for (const p of data) {
         const full = pickBooruFile(p.file_url, p.large_file_url);
         if (!full) continue;
@@ -528,19 +598,27 @@ const SOURCES = {
           // median 17, p90 53, max 207.
           score: p.score,
           fileSize: typeof p.file_size === "number" ? p.file_size : null,
+          // The API returns every tag (`tag_string`, space-separated) —
+          // stored, capped, so the card can show them and a click can
+          // search them (see the card template).
+          tags: capTags(typeof p.tag_string === "string" ? p.tag_string.split(" ") : []),
         });
-        if (out.length >= BOORU_TARGET) break;
+        if (out.length >= target) break;
       }
-      if (data.length < BOORU_PAGE_SIZE) break; // last page
-      if (out.length < BOORU_TARGET) await sleep(BOORU_PAGE_DELAY_MS);
+      if (data.length < BOORU_PAGE_SIZE) { lastPageShort = true; break; } // last page
+      if (out.length < target) await sleep(BOORU_PAGE_DELAY_MS);
     }
     out.hidden = hiddenPromise ? await hiddenPromise : 0;
     out.hiddenScope = "db"; // exact count across the whole database
     out.via = via;
+    // Load-more cursor: the next page not yet fetched, or null when the
+    // last page was short (Danbooru has no more pages for this query).
+    out.nextCursor = lastPageShort ? null : fetchedUpTo + 1;
+    out.exhausted = lastPageShort;
     return out;
   },
 
-  async safebooru(q) {
+  async safebooru(q, opts = {}) {
     // Safebooru hosts safe content only (verified live 2026-11-15: all 100
     // "code geass" posts on the first page rated "general"). In NSFW mode
     // there is nothing to fetch — return empty so the status pill can say
@@ -573,8 +651,6 @@ const SOURCES = {
     // and is ignored.
     const fetchPage = (pid) => fetchJson(
       `https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1&limit=${BOORU_PAGE_SIZE}&pid=${pid}&tags=${encodeURIComponent(tags)}`, true);
-    const [p0, p1] = await Promise.allSettled([fetchPage(0), fetchPage(1)]);
-    if (p0.status === "rejected") throw p0.reason;
     // Processes one page's posts into out, counting examined/hidden exactly
     // as the old loop did; returns whether the page was full (i.e. not the
     // last page — a short page means there is no next page to use).
@@ -604,6 +680,8 @@ const SOURCES = {
           // for the other 12, so it carries no ranking information. Set to
           // null — Safebooru items sort in the unscored tail in Best mode.
           score: null,
+          // Safebooru returns tags as a space-separated string.
+          tags: capTags(typeof p.tags === "string" ? p.tags.split(" ") : []),
         };
         if (passesMinRes(item, m)) {
           out.push(item);
@@ -614,16 +692,164 @@ const SOURCES = {
       }
       return data.length >= BOORU_PAGE_SIZE;
     };
+    // Load more (round 8): one pid per click, starting at the cursor the
+    // initial fetch returned. A failed pid throws — loadMore catches it
+    // and leaves the cursor alone, so the next click retries the same pid.
+    if (opts.more) {
+      const pid = opts.startPid;
+      const { data, via: v } = await fetchPage(pid);
+      via = v;
+      const full = processPage(data);
+      out.hidden = hidden;
+      out.hiddenScope = "checked"; // only among the pages actually fetched
+      out.examined = examined;
+      out.via = via;
+      out.nextCursor = full ? pid + 1 : null;
+      out.exhausted = !full;
+      return out;
+    }
+    // Pages 0+1 fetch concurrently (same pattern as Wallhaven above and
+    // AlphaCoders in adapters-extra.js): page 1 is needed whenever page 0
+    // yields fewer than 100 passing posts — the min-resolution filter runs
+    // client-side here, so a page of small posts can pass almost nothing —
+    // and sequential fetching paid a 250 ms delay plus a second round-trip
+    // per search (measured in node with stubbed 150 ms pages: ~555 ms ->
+    // ~151 ms). allSettled: page 0 still throws if it fails, a failed page
+    // 1 just leaves the page-0 results standing — that differs from the
+    // old sequential code, where a page-1 failure errored the whole
+    // source; partial results are the better outcome there, and the
+    // success path is identical (same items, same order, same counts, same
+    // `via` — the last page actually used). When page 0 already meets the
+    // target or is the last page (< 200 items), page 1 was fetched anyway
+    // and is ignored.
+    const [p0, p1] = await Promise.allSettled([fetchPage(0), fetchPage(1)]);
+    if (p0.status === "rejected") throw p0.reason;
     via = p0.value.via;
     const full0 = processPage(p0.value.data);
+    let pid1Processed = false, full1 = false;
     if (full0 && out.length < BOORU_TARGET && p1.status === "fulfilled") {
       via = p1.value.via;
-      processPage(p1.value.data);
+      full1 = processPage(p1.value.data);
+      pid1Processed = true;
     }
     out.hidden = hidden;
     out.hiddenScope = "checked"; // only among the pages actually fetched
     out.examined = examined;
     out.via = via;
+    // Load-more cursor: the next pid not yet PROCESSED. Pid 1 was fetched
+    // alongside pid 0 but is only processed when pid 0 alone doesn't meet
+    // the target — when it wasn't processed, the first load-more click
+    // re-fetches it (one wasted request in the initial fetch, not a gap
+    // in the results). A short pid 0 means there is no pid 1 at all.
+    out.nextCursor = !full0 ? null : (!pid1Processed ? 1 : (full1 ? 2 : null));
+    out.exhausted = out.nextCursor === null;
+    return out;
+  },
+
+  async gelbooru(q, opts = {}) {
+    // Same dapi shape as Safebooru (same Gelbooru-software API), with two
+    // differences: the dapi 401s without an account's api_key + user_id,
+    // and Gelbooru is not safe-only — purity is applied with the same
+    // rating: metatags as Danbooru. No key (or no user ID) means no fetch
+    // at all: throw before any request so shortReason's /api key/i rule
+    // turns it into a "needs API key" pill (same pattern as Wallhaven
+    // NSFW), instead of a 401 or a misleading "0 found".
+    // The API docs could not be verified live from this VM (gelbooru.com
+    // is blocked here), so the params/fields follow the documented dapi
+    // as recorded in the audit (api_key + user_id, same post fields as
+    // Safebooru) — live verification needs a real key in Settings.
+    const { key, userId } = gelbooruCreds();
+    if (!key || !userId) throw new Error("needs a Gelbooru API key — paste one in Settings");
+    const p = purity();
+    const tags = formatQueryFor("gelbooru", q)
+      + (p === "safe" ? " rating:safe" : p === "mixed" ? " rating:safe,questionable" : " rating:explicit");
+    const m = minRes();
+    const out = [];
+    let examined = 0;
+    let hidden = 0;
+    let via = "";
+    // Same concurrent pages 0+1 as Safebooru (see the comment there):
+    // page 0 still throws if it fails, a failed page 1 just leaves the
+    // page-0 results standing.
+    const fetchPage = (pid) => fetchJson(
+      `https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=${BOORU_PAGE_SIZE}&pid=${pid}&tags=${encodeURIComponent(tags)}&api_key=${encodeURIComponent(key)}&user_id=${encodeURIComponent(userId)}`, true);
+    const processPage = (data) => {
+      if (!Array.isArray(data) || data.length === 0) return false;
+      for (const post of data) {
+        examined++; // count posts actually looked at, not pages fetched
+        const full = pickBooruFile(post.file_url, post.sample_url);
+        if (!full) continue;
+        // Same huge-file rule as Danbooru/Safebooru (Gelbooru reports no
+        // file_size, so width is the only signal — its sample is the
+        // ~850px version).
+        const displayFull = post.width > 6000 && post.sample_url && post.sample_url !== full
+          ? post.sample_url : null;
+        const item = {
+          thumb: post.preview_url,
+          full,
+          displayFull,
+          // Same image, smaller: the ~850px sample, then the preview.
+          alts: [post.sample_url, post.preview_url].filter((u) => u && u !== full),
+          page: `https://gelbooru.com/index.php?page=post&s=view&id=${post.id}`,
+          width: post.width, height: post.height, source: "Gelbooru",
+          // Gelbooru's dapi returns created_at ("YYYY-MM-DD HH:MM:SS",
+          // parsed by Date.parse for Newest sort) — unlike Safebooru,
+          // which returns none.
+          date: post.created_at || null,
+          // Gelbooru's `score` is a real integer (upvotes minus
+          // downvotes), so it ranks in Best mode — unlike Safebooru's,
+          // which is null ~88% of the time. A 0 or negative score still
+          // sorts in the unscored tail (bestRank only ranks score > 0).
+          // Live distribution unverified (no key to test with) — if it
+          // turns out to be mostly 0, this degrades to the tail, harmless.
+          score: typeof post.score === "number" ? post.score : null,
+          // Gelbooru returns tags as a space-separated string, like Safebooru.
+          tags: capTags(typeof post.tags === "string" ? post.tags.split(" ") : []),
+        };
+        if (passesMinRes(item, m)) {
+          out.push(item);
+          if (out.length >= BOORU_TARGET) break;
+        } else {
+          hidden++;
+        }
+      }
+      return data.length >= BOORU_PAGE_SIZE;
+    };
+    // Load more (round 8): one pid per click, starting at the cursor the
+    // initial fetch returned. A failed pid throws — loadMore catches it
+    // and leaves the cursor alone, so the next click retries the same pid.
+    if (opts.more) {
+      const pid = opts.startPid;
+      const { data, via: v } = await fetchPage(pid);
+      via = v;
+      const full = processPage(data);
+      out.hidden = hidden;
+      out.hiddenScope = "checked"; // only among the pages actually fetched
+      out.examined = examined;
+      out.via = via;
+      out.nextCursor = full ? pid + 1 : null;
+      out.exhausted = !full;
+      return out;
+    }
+    const [p0, p1] = await Promise.allSettled([fetchPage(0), fetchPage(1)]);
+    if (p0.status === "rejected") throw p0.reason;
+    via = p0.value.via;
+    const full0 = processPage(p0.value.data);
+    let pid1Processed = false, full1 = false;
+    if (full0 && out.length < BOORU_TARGET && p1.status === "fulfilled") {
+      via = p1.value.via;
+      full1 = processPage(p1.value.data);
+      pid1Processed = true;
+    }
+    out.hidden = hidden;
+    out.hiddenScope = "checked"; // only among the pages actually fetched
+    out.examined = examined;
+    out.via = via;
+    // Load-more cursor: the next pid not yet PROCESSED (same pattern as
+    // Safebooru — pid 1 was fetched alongside pid 0 but is only processed
+    // when pid 0 alone doesn't meet the target).
+    out.nextCursor = !full0 ? null : (!pid1Processed ? 1 : (full1 ? 2 : null));
+    out.exhausted = out.nextCursor === null;
     return out;
   },
 
@@ -646,36 +872,114 @@ const SOURCES = {
     // same order, same `via` — the last page actually used). When page 1
     // is the last page (< 24 items), page 2 was fetched anyway and its
     // results are ignored — one wasted fetch in that case too.
-    const toItem = (w) => ({
-      thumb: w.thumbs.large,
-      full: w.path,
-      alts: [w.thumbs.large].filter((u) => u && u !== w.path),
-      page: w.url,
-      width: parseInt(w.resolution.split("x")[0], 10),
-      height: parseInt(w.resolution.split("x")[1], 10),
-      source: "Wallhaven",
-      date: w.created_at || null,
-      // `favorites` (users who saved it) over `views` (passive traffic):
-      // favorites is an active endorsement, and Wallhaven itself offers
-      // sorting=favorites. "code geass" sample (2026-11-15, relevance
-      // page): favorites median 12, max 44; views median 5,286.
-      score: w.favorites,
-      fileSize: typeof w.file_size === "number" ? w.file_size : null,
-    });
-    const [p1, p2] = await Promise.allSettled([
-      fetchJson(`https://wallhaven.cc/api/v1/search?${wallhavenParams(q, { page: 1, trending: opts.trending })}`, true),
-      fetchJson(`https://wallhaven.cc/api/v1/search?${wallhavenParams(q, { page: 2, trending: opts.trending })}`, true),
-    ]);
+    const toItem = (w) => {
+      const width = parseInt(w.resolution.split("x")[0], 10);
+      const height = parseInt(w.resolution.split("x")[1], 10);
+      // Huge originals (multi-MB / very wide) stall past the 15 s probe
+      // timeout — same rule as Danbooru (file_size > 15 MB or width >
+      // 6000). Wallhaven's API offers no mid-size sample: its thumbs are
+      // all tiny (verified live 2026-11-16 against the real API — a
+      // 7680x4320 file and a 1920x1080 one alike: large is 432px on the
+      // long side, original 300px, small a 300x200 crop), so the only
+      // honest sample is thumbs.large, which is already the card thumb.
+      // Show the thumb instead of the original (displayFull); the Full
+      // image link still opens the original, and the original stays the
+      // first fallback candidate, so a blocked thumb still tries it
+      // before the card fails. The upgrade then early-returns "cached"
+      // (src already equals the display URL), so no probe slot is burned
+      // and the preload meter charges the sample estimate, not the
+      // original's file_size (see preloadCost).
+      const huge = (typeof w.file_size === "number" && w.file_size > 15 * 1024 * 1024)
+        || width > 6000;
+      const displayFull = huge && w.thumbs && w.thumbs.large && w.thumbs.large !== w.path
+        ? w.thumbs.large : null;
+      return {
+        thumb: w.thumbs.large,
+        full: w.path,
+        displayFull,
+        alts: [w.thumbs.large].filter((u) => u && u !== w.path),
+        page: w.url,
+        width,
+        height,
+        source: "Wallhaven",
+        date: w.created_at || null,
+        // `favorites` (users who saved it) over `views` (passive traffic):
+        // favorites is an active endorsement, and Wallhaven itself offers
+        // sorting=favorites. "code geass" sample (2026-11-15, relevance
+        // page): favorites median 12, max 44; views median 5,286.
+        score: w.favorites,
+        fileSize: typeof w.file_size === "number" ? w.file_size : null,
+        // Wallhaven returns tags as objects ({name, ...}) — take the name,
+        // capped like the boorus.
+        tags: capTags(Array.isArray(w.tags) ? w.tags.map((t) => (typeof t === "string" ? t : (t && t.name))) : []),
+      };
+    };
+    const fetchPage = (page) => fetchJson(
+      `https://wallhaven.cc/api/v1/search?${wallhavenParams(q, { page, trending: opts.trending })}`, true);
+    // Load more (round 8): one page per click, starting at the cursor the
+    // initial fetch returned. A short page (< 24 items) is the last page.
+    if (opts.more) {
+      const page = opts.startPage;
+      const { data, via } = await fetchPage(page);
+      const out = (data.data || []).map(toItem);
+      const full = data.data && data.data.length >= 24;
+      out.nextCursor = full ? page + 1 : null;
+      out.exhausted = !full;
+      out.via = via;
+      return out;
+    }
+    // Exact min-res hidden count, same pattern as Danbooru's counts calls:
+    // Wallhaven's meta.total counts the results matching the query AS GIVEN
+    // (verified live 2026-11-16: "landscape" total 50,889 without atleast,
+    // 42,383 with atleast=1920x1080 — the difference, 8,506, is exactly
+    // what the filter hid). So one extra request with the same params
+    // minus `atleast` gives the before-filter total; hidden is the
+    // difference. NOTE: total minus returned would NOT be the hidden
+    // count — that is the results sitting on unfetched pages (42,383 − 48).
+    // Skipped for trending (same rationale as Danbooru) and when no min-res
+    // filter is set. A failed counts fetch just means no count (0), never
+    // a failed source. The counts request runs concurrently with the page
+    // fetches, so it adds no latency.
+    const m = minRes();
+    let hiddenPromise = null;
+    if (m && !opts.trending) {
+      const noAtleast = wallhavenParams(q, { page: 1, trending: opts.trending });
+      noAtleast.delete("atleast");
+      hiddenPromise = fetchJson(`https://wallhaven.cc/api/v1/search?${noAtleast}`, true)
+        .then(({ data }) => (typeof data.meta?.total === "number" ? data.meta.total : null))
+        .catch(() => null);
+    }
+    const [p1, p2] = await Promise.allSettled([fetchPage(1), fetchPage(2)]);
     if (p1.status === "rejected") throw p1.reason;
     const out = [];
     const { data, via: v1 } = p1.value;
     let via = v1;
+    const full1 = data.data && data.data.length >= 24;
     out.push(...(data.data || []).map(toItem));
-    if (data.data && data.data.length >= 24 && out.length < WALLHAVEN_TARGET && p2.status === "fulfilled") {
+    let full2 = false, p2Processed = false;
+    if (full1 && out.length < WALLHAVEN_TARGET && p2.status === "fulfilled") {
       const { data: data2, via: v2 } = p2.value;
+      full2 = data2.data && data2.data.length >= 24;
       out.push(...(data2.data || []).map(toItem));
       via = v2;
+      p2Processed = true;
     }
+    const totalWith = typeof data.meta?.total === "number" ? data.meta.total : null;
+    const totalWithout = hiddenPromise ? await hiddenPromise : null;
+    if (totalWith !== null && totalWithout !== null) {
+      out.hidden = Math.max(0, totalWithout - totalWith);
+      out.hiddenScope = "db"; // exact count across the whole database
+    } else {
+      out.hidden = 0;
+      out.hiddenScope = "db";
+    }
+    // Load-more cursor: the next page not yet PROCESSED. Page 2 was
+    // fetched alongside page 1 but is only processed when page 1 is full
+    // and the target isn't met — when it wasn't processed (page 2's fetch
+    // failed), the first load-more click re-fetches it instead of
+    // skipping to page 3. A short page 1 means there is no page 2 at all.
+    out.nextCursor = !full1 ? null : (!p2Processed ? 2 : (full2 ? 3 : null));
+    out.exhausted = out.nextCursor === null;
     out.via = via;
     return out;
   },
@@ -684,6 +988,18 @@ const SOURCES = {
   // on every variant, verified 2026-11-15). The HTML-scraping replacement
   // lives in adapters-extra.js and registers itself into SOURCES.
 };
+
+// Load more (round 8): each paginated source exposes a `more` entry that
+// fetches ONE further page from the cursor its initial fetch returned (see
+// nextCursor on the returned arrays). The cursor is opaque to the caller
+// — a page/pid number for the API sources, a page URL for the scrapers
+// (see adapters-extra.js). A source without `more` — WallpaperCave, whose
+// category page holds 50 with no pagination link — contributes nothing
+// more; loadMore treats a missing `more` as exhausted.
+SOURCES.danbooru.more = (q, cursor) => SOURCES.danbooru(q, { startPage: cursor, maxPages: 1, more: true });
+SOURCES.safebooru.more = (q, cursor) => SOURCES.safebooru(q, { startPid: cursor, more: true });
+SOURCES.gelbooru.more = (q, cursor) => SOURCES.gelbooru(q, { startPid: cursor, more: true });
+SOURCES.wallhaven.more = (q, cursor) => SOURCES.wallhaven(q, { startPage: cursor, more: true });
 
 // Wallhaven search parameters, factored out of the adapter so the color
 // wiring is unit-testable (harness Group G). The `colors` param is only set
@@ -751,6 +1067,147 @@ const WALLHAVEN_TARGET = 48;
 let lastResults = [];
 let lastReports = [];
 let lastQuery = "";
+// --- Load more (round 8) ---
+// The last search's per-source pagination state, kept alongside
+// lastResults/lastReports so a sort/ratio change re-renders without
+// re-searching AND without losing the cursors:
+//   lastCursors[name]  — the opaque next-page cursor the source's initial
+//                        fetch returned (page/pid number, or a page URL);
+//                        absent = exhausted (no more pages) or unsupported
+//                        (WallpaperCave — no pagination at all).
+//   lastSourceState[name] — cumulative per-source totals for the status
+//                        pills ({ passing, hidden, via, empty }), so a
+//                        load-more batch can rebuild its source's pill
+//                        from the new totals instead of the first batch's.
+//   extraLimit         — extra render capacity from Load more clicks, this
+//                        search (see the Show-limit note in renderResults).
+//   moreLoading        — a load-more fetch is in flight (button disabled,
+//                        double-clicks swallowed).
+// A new search resets all of it (see search()); switching to
+// Favorites/Trending leaves it alone, so coming back to the search view
+// keeps both the results and the cursors.
+const LOAD_MORE_STEP = 100; // extra cards shown per Load more click
+let lastCursors = {};
+let lastSourceState = {};
+let extraLimit = 0;
+let moreLoading = false;
+let searchLoading = false; // a search fetch is in flight (loadMore must not run then)
+let lastVisibleCount = 0; // cards on screen after the last render
+let lastLimitHidden = 0; // fetched-but-unrendered cards after the last render
+let loadMoreBtnCache = null;
+function loadMoreBtn() {
+  if (!loadMoreBtnCache) loadMoreBtnCache = $("#load-more");
+  return loadMoreBtnCache;
+}
+// Button state, derived from the current view + cursors + render:
+// hidden unless a search rendered cards; disabled while a load is in
+// flight, or when nothing is left to show (every source exhausted AND
+// the fetched pool fully shown). Called from renderResults (after the
+// visible/limit counts are known) and from search()/loadTrending() when
+// they show skeletons (hide until the new results render).
+function updateLoadMoreButton() {
+  const btn = loadMoreBtn();
+  if (!btn) return;
+  // A search fetch is in flight: the grid shows skeletons, not cards.
+  // search() hides the button directly, but a load-more click racing the
+  // new search can resolve after the search started — its dropped-load
+  // path would otherwise unhide the button over the skeletons (stale
+  // lastReports counts). Hide until the new search renders.
+  if (searchLoading) { btn.hidden = true; return; }
+  const show = !favsView && !trendingView && lastReports.length > 0 && lastVisibleCount > 0;
+  btn.hidden = !show;
+  if (!show) return;
+  const hasMorePages = Object.keys(lastCursors).some((n) => typeof SOURCES[n]?.more === "function");
+  const hasHidden = lastLimitHidden > 0;
+  if (moreLoading) {
+    btn.disabled = true;
+    btn.textContent = "Loading…";
+  } else if (!hasMorePages && !hasHidden) {
+    btn.disabled = true;
+    btn.textContent = "No more results";
+  } else {
+    btn.disabled = false;
+    btn.textContent = "Load more";
+  }
+}
+
+// One Load more click: fetch the next page from every source that still
+// has one, in parallel, and raise the search view's render cap by
+// LOAD_MORE_STEP so the new items actually show. The Show limit is a
+// rendering cap (see renderResults), so growing it is what "show more"
+// means — the fetch supplies the extra items, and the cap bump reveals
+// them together with any pool items the limit was already hiding. Every
+// click fetches (when a source has a next page), even while the pool
+// still holds unrendered cards: the initial search already fetches ~5x
+// what it shows, and a click that only re-revealed old cards would look
+// like the feature does nothing. A failed source contributes nothing
+// this round and keeps its cursor, so the next click retries it — the
+// same partial-results rule as search(). Never re-runs the search, never
+// touches the preload counters or the Favorites view, and never resets
+// the sort.
+async function loadMore() {
+  // No-op guards: not in the search view, nothing ever searched, a search
+  // fetch is in flight (its cursors were just reset — a load now would
+  // re-render the old results and kill the new search via the viewSeq
+  // guard), or a load already in flight (the button disables itself, but
+  // a keyboard or programmatic double-click must not double-fetch).
+  if (moreLoading || searchLoading || favsView || trendingView || !lastReports.length) return;
+  const names = Object.keys(lastCursors).filter((n) => typeof SOURCES[n]?.more === "function");
+  // Nothing left to fetch AND nothing left to reveal: the button should
+  // already be disabled — bail out rather than bumping the cap for nothing.
+  if (!names.length && lastLimitHidden <= 0) return;
+  moreLoading = true;
+  updateLoadMoreButton();
+  const seq = ++viewSeq; // a new search during the fetch cancels this load
+  const q = lastQuery;
+  const batches = await Promise.all(names.map(async (name) => {
+    try {
+      const items = await SOURCES[name].more(q, lastCursors[name]);
+      const m = minRes();
+      const passing = items.filter((r) => passesMinRes(r, m));
+      return { name, items, passing, ok: true };
+    } catch (err) {
+      return { name, err, ok: false };
+    }
+  }));
+  moreLoading = false;
+  // A newer search started while this load was in flight: drop the result
+  // (its cursors belong to the old session — search() reset them).
+  if (seq !== viewSeq) { updateLoadMoreButton(); return; }
+  // Dedupe set for the merge below (built once, shared by all batches).
+  const seenFull = new Set(lastResults.map((r) => r.full));
+  for (const b of batches) {
+    if (!b.ok) continue; // failed source: pill and cursor stand, retry next click
+    // Dedupe the batch against the fetched set (same by-full rule as
+    // renderResults): a source re-serving a post from an earlier page
+    // (page boundaries shift as new posts arrive) must not count twice
+    // in the pill or the pool.
+    const fresh = b.passing.filter((r) => !seenFull.has(r.full));
+    for (const r of fresh) seenFull.add(r.full);
+    lastResults.push(...fresh);
+    // Advance the cursor (a null nextCursor means exhausted — drop the entry).
+    if (b.items.nextCursor != null) lastCursors[b.name] = b.items.nextCursor;
+    else delete lastCursors[b.name];
+    // Rebuild this source's pill from the cumulative totals: the hidden
+    // count adds across batches (Safebooru counts among fetched pages;
+    // Danbooru's batch hidden is 0, so its exact DB count stands), and
+    // the via is the latest batch's.
+    const st = lastSourceState[b.name] || { passing: 0, hidden: 0, via: "", empty: false };
+    st.passing += fresh.length;
+    st.hidden += b.items.hidden || 0;
+    st.via = b.items.via || st.via;
+    st.empty = false;
+    lastSourceState[b.name] = st;
+    const idx = lastReports.findIndex((r) => r[0] === b.name);
+    if (idx >= 0) {
+      lastReports[idx] = sourceReport(b.name, { hidden: st.hidden, hiddenScope: st.hiddenScope, via: st.via, empty: st.empty }, { length: st.passing });
+    }
+  }
+  extraLimit += LOAD_MORE_STEP;
+  renderResults(lastResults, lastReports, lastQuery);
+  updateLoadMoreButton();
+}
+
 // Generation counter for async loads: search() and loadTrending() capture
 // it at start and only render if it still matches when their fetches
 // finish. Without this, a slow first search finishing after a second one
@@ -1100,11 +1557,13 @@ function markImageFailed(img, reason) {
 // A card image finished loading, so the browser knows its true size.
 // That size is used only for the badge: when the image showing is the
 // FULL one, its pixels ARE the real dimensions, so the badge stops
-// saying "size unknown". The box itself never changes here (see below) —
-// the loaded ratio is never applied to the anchor. Idempotent — fires
-// again on every src swap (thumb -> full), and the badge check makes the
-// dimension fill-in a one-time thing. Items with parsed dimensions are
-// unaffected (their ratio already matches; the badge is already set).
+// saying "size unknown" — or showing the listing ratio — and shows them.
+// The box itself never changes here (see below) — the loaded ratio is
+// never applied to the anchor. Idempotent — fires again on every src swap
+// (thumb -> full), and the badge check makes the dimension fill-in a
+// one-time thing: a badge already showing real pixels ("1920×1080") is
+// left alone. Items with parsed dimensions are unaffected (their ratio
+// already matches; the badge is already set).
 function imgLoaded(img) {
   const w = img.naturalWidth, h = img.naturalHeight;
   if (!w || !h) return;
@@ -1136,7 +1595,13 @@ function imgLoaded(img) {
   // an img built outside renderResults) working.
   const card = img._card || img.closest(".card");
   const badge = img._badge || (card && card.querySelector(".badge-res"));
-  if (badge && badge.textContent === "size unknown"
+  // Fill the badge only while it does NOT already show real pixels: a
+  // "size unknown" badge, or a ratio badge ("16:9") on a card whose full
+  // image just loaded, both upgrade to the real "W×H". A thumbOnly card
+  // never reaches here with src === data-full (its full is never loaded
+  // in-grid), so a Wallpapers.com ratio badge stays the ratio forever —
+  // the honest end state, since the full's real pixels are never measured.
+  if (badge && !/^\d+×\d+$/.test(badge.textContent)
       && img.getAttribute("src") === img.dataset.full) {
     badge.textContent = `${w}×${h}`;
   }
@@ -1519,7 +1984,7 @@ function getImageObserver() {
 // --- Favorites ---
 // Saved in localStorage under `wms.favs` (this browser only — no account,
 // no server). Each entry is a snapshot of the item as rendered (thumb, full,
-// alts, page, width, height, source, date, score), so the Favorites view can
+// alts, page, width, height, source, date, score, tags), so the Favorites view can
 // re-render cards without re-searching. Deduped by source page URL.
 const FAVS_KEY = "wms.favs";
 
@@ -1566,6 +2031,10 @@ function favSnapshot(r) {
     ratioW: r.ratioW || 0,
     ratioH: r.ratioH || 0,
     fileSize: typeof r.fileSize === "number" ? r.fileSize : null,
+    // Tags ride along so a favourited card keeps its chips in the
+    // Favorites view without re-searching. Old snapshots have no `tags`
+    // field — the template treats that as "no tags".
+    tags: Array.isArray(r.tags) ? [...r.tags] : [],
   };
 }
 
@@ -1645,6 +2114,124 @@ function discardRenderedCards() {
   if (imageObserver) imageObserver.disconnect();
 }
 
+// One card's HTML — a pure function of the item + favorite state, shared
+// by the full rebuild and the growth path (see buildCard), so both build
+// byte-identical cards. The img's data-* attributes are what
+// loadFullImage/probeUrl read; the anchor's inline aspect-ratio is the
+// frozen reserve (round 3 + round 7): imgLoaded never rewrites it, a
+// loaded image only fills in the badge's real dimensions.
+function cardHtml(r, fav) {
+  // Pixels known -> "1920×1080". Pixels unknown but ratio known (only
+  // Wallpapers.com: ratioW/ratioH from the listing thumb) -> the reduced
+  // ratio, e.g. "16:9": the shape IS known, the pixels are not, and a
+  // colon can never be mistaken for a pixel size. Neither known -> the
+  // honest "size unknown". (imgLoaded may still upgrade a ratio badge to
+  // real pixels if the full image ever loads — see there.)
+  const res = (r.width && r.height) ? `${r.width}×${r.height}`
+    : (r.ratioW && r.ratioH) ? ratioLabel(r.ratioW, r.ratioH)
+    : "size unknown";
+  // Thumb first: the small thumbnail loads in <1 s and fills the box
+  // immediately; the full-res image is swapped in by loadFullImage when
+  // the card nears the viewport (see the loader above). Full quality is
+  // still the end state — it just doesn't sit black while a 10-25 MB
+  // file downloads or stalls.
+  // The aspect-ratio lives on the ANCHOR, not the <img>: the box height
+  // is fixed from the known dimensions — or from the listing's aspect
+  // ratio when pixels are unknown (ratioW/ratioH) — and only falls back
+  // to 4:3 when even the ratio is unknown. Whatever loads then fills the
+  // box with object-fit: contain — never cropped, never distorted.
+  // The ratio is FROZEN at render: imgLoaded never rewrites it (see
+  // there). A loaded image only fills in the badge's real dimensions.
+  // Freezing is what keeps the masonry still — in CSS multi-column
+  // layout any height change rebalances the columns and reshuffles the
+  // visual order, so a "correction" on load moved cards and changed
+  // their order as the user scrolled.
+  // referrerpolicy=no-referrer avoids Referer-based hotlink blocks.
+  // Image URLs go through the local proxy when it is up (see
+  // proxiedImageUrl) — verified 2026-11-15 to un-stall Zerochan images.
+  const ratio = (r.width && r.height)
+    ? `aspect-ratio:${r.width} / ${r.height}`
+    : (r.ratioW && r.ratioH)
+      ? `aspect-ratio:${r.ratioW} / ${r.ratioH}`
+      : `aspect-ratio:4 / 3`;
+  const thumbSrc = proxiedImageUrl(r.thumb);
+  // The full image the card LINKS to is always the original (the anchor
+  // href and the "Full image" link below). What the card DISPLAYS can be
+  // smaller: for huge originals the adapter sets displayFull to the
+  // ~850px sample, which loads in a second where a 17–98 MB original
+  // stalls past the probe timeout (see the Danbooru adapter). The
+  // original stays the first fallback candidate, so a blocked sample
+  // still tries it before the card fails.
+  const displayFull = r.displayFull || r.full;
+  const fullUrl = proxiedImageUrl(r.full);
+  // displayFull is usually r.full itself — reuse fullUrl instead of
+  // re-running the proxy check on the same string (one fewer
+  // proxiedImageUrl call per card; identical output, same string).
+  const displayUrl = displayFull === r.full ? fullUrl : proxiedImageUrl(displayFull);
+  // What an upgrade of this card costs the preload meter (see preloadCost).
+  const cost = preloadCost(r);
+  const alts = [
+    ...(displayFull !== r.full ? [r.full] : []),
+    ...(r.alts || []).filter((u) => u && u !== r.full && u !== displayFull),
+  ].map(proxiedImageUrl);
+  // If the full image is proxy-routed (Zerochan, WallpaperCave), keep
+  // the direct URL as a final fallback candidate: a proxy that fails
+  // for this one image must not brick a card the direct fetch could
+  // still serve. The proxied URL is tried first, so a healthy proxy is
+  // never bypassed — and with no proxy configured the direct URL is
+  // already the primary, so nothing is appended. (fullUrl IS
+  // proxiedImageUrl(r.full), computed above — no second call per card.)
+  if (fullUrl !== r.full && !alts.includes(r.full)) alts.push(r.full);
+  // Tags, when the source gave any (the API sources — Danbooru,
+  // Safebooru, Wallhaven, Gelbooru; scrapers have none): small chips under
+  // the links row, inside the meta overlay — so they are revealed with the
+  // action row on hover and always visible on touch (the same
+  // @media (hover: none) rule that keeps the action row visible), and
+  // so they never touch the anchor or its aspect-ratio reserve (the
+  // meta sits outside the anchor, in the card). At most 6 chips; the
+  // rest collapse into a muted "+N" count. Every chip is escaped
+  // (escapeHtml) — a tag is untrusted API text, never markup.
+  const tags = r.tags || [];
+  const shownTags = tags.slice(0, 6);
+  const extraTags = tags.length - shownTags.length;
+  const tagsHtml = tags.length ? `
+        <div class="tags">${shownTags.map((t) => `<button type="button" class="tag-chip" data-action="search-tag" data-tag="${escapeHtml(t)}" title="Search for ${escapeHtml(t)}">${escapeHtml(t)}</button>`).join("")}${extraTags > 0 ? `<span class="tag-more" title="${extraTags} more tag${extraTags === 1 ? "" : "s"}">+${extraTags}</span>` : ""}</div>` : "";
+  return `
+    <article class="card">
+      <a class="thumb" href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${escapeHtml(thumbSrc)}" data-full="${escapeHtml(displayUrl)}" data-alts="${escapeHtml(alts.join("|"))}"${r.thumbOnly ? ' data-thumb-only="1"' : ""} data-cost="${cost}" data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
+        <span class="badge badge-res">${res}</span>
+        <span class="badge badge-src">${r.source}</span>
+      </a>
+      <div class="meta">
+        <div class="links">
+          <a href="${escapeHtml(r.page)}" target="_blank" rel="noopener">Source page ↗</a>
+          <a class="full-link" href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener">Full image ↗</a>
+          <button type="button" class="img-retry" data-action="retry-img" style="display:none">Retry</button>
+          <button type="button" class="fav-btn${fav ? " fav-on" : ""}" data-action="toggle-fav" data-page="${escapeHtml(r.page)}" aria-pressed="${fav ? "true" : "false"}" aria-label="Save to favorites" title="Save to favorites">${fav ? "♥" : "♡"}</button>
+        </div>
+        ${tagsHtml}
+      </div>
+    </article>`;
+}
+
+// Build one card node from the shared template: used by the growth path
+// for cards the fast path doesn't already have (load more, limit raised,
+// ratio loosened). The img's caches (anchor, card, badge) are attached
+// here, exactly like the full rebuild does after parsing — imgLoaded and
+// markImageFailed rely on them, and the fallbacks keep an img built
+// outside renderResults working if the template ever drifts.
+function buildCard(r, fav) {
+  const holder = document.createElement("div");
+  holder.innerHTML = cardHtml(r, fav);
+  const card = holder.children[0];
+  const img = card.querySelector("img");
+  img._anchor = img.parentElement || img.closest("a.thumb");
+  img._card = card;
+  const sib = img.nextElementSibling;
+  img._badge = (sib && typeof sib.className === "string" && sib.className.includes("badge-res")) ? sib : null;
+  return { card, img };
+}
+
 function renderResults(results, reports, q) {
   const seen = new Set();
   const uniq = results.filter((r) => {
@@ -1670,9 +2257,22 @@ function renderResults(results, reports, q) {
   // below keys on visible.length, so a limit change rebuilds (new set)
   // while a sort change with the same limit still reorders in place.
   // The hidden count gets its own pill, like the ratio filter's.
+  // Load more (round 8) raises the SEARCH view's cap by LOAD_MORE_STEP
+  // per click (extraLimit): the Show limit is a rendering cap, so growing
+  // it is what "show more" means — the fetch only supplies the extra
+  // items. Favorites always shows all, and Trending never loads more, so
+  // neither gets the extra capacity.
   const limit = favsView ? 0 : resultLimit();
-  const limitHidden = limit > 0 ? Math.max(0, visible.length - limit) : 0;
-  if (limit > 0) visible = visible.slice(0, limit);
+  const effLimit = (!favsView && !trendingView && limit > 0) ? limit + extraLimit : limit;
+  const limitHidden = effLimit > 0 ? Math.max(0, visible.length - effLimit) : 0;
+  if (effLimit > 0) visible = visible.slice(0, effLimit);
+  // Remember what this render showed, for the Load more button (see
+  // updateLoadMoreButton): whether any cards are on screen, and whether
+  // the fetched pool still holds unrendered ones. Set here — before the
+  // empty-state returns below — so every render path reports it.
+  lastVisibleCount = visible.length;
+  lastLimitHidden = limitHidden;
+  updateLoadMoreButton();
 
   // Rebuild the on-screen lookup the heart button's click handler uses.
   renderedByPage.clear();
@@ -1769,17 +2369,26 @@ function renderResults(results, reports, q) {
   // their HTML and re-observes their images (measured in node, 100 -> 50
   // ratio change: 15.5 ms median full rebuild -> 9.5 ms; a real browser
   // saves the innerHTML parse, new DOM nodes and image re-handling on
-  // top). A growing set still rebuilds (new cards needed), as does any
-  // proxy/view change.
+  // top).
+  // And a GROWING visible set (load more, limit raised, ratio loosened):
+  // the cards the set gained are built from the same template (see
+  // buildCard) and appended in order, while the existing cards are moved,
+  // not rebuilt — their loaded images, probe state and observer
+  // registration survive. A growing set used to take the full rebuild
+  // below, which re-fetched every thumb and re-probed every full image.
+  // Guarded by cardByPage.size > 0: an empty cache means the box holds
+  // skeletons or an empty state, not cards, and only a full rebuild can
+  // replace those (search()/loadTrending() and the empty branches clear
+  // the cache whenever they replace the cards).
   // Dropped cards get the same treatment as a full rebuild (see
   // discardRenderedCards): their in-flight upgrades are cancelled and
   // they leave the observer, so no probe keeps downloading for a card
   // that is no longer shown.
   const visiblePages = new Set(visible.map((r) => r.page));
-  if (cardByPage.size >= visible.length
+  if (cardByPage.size > 0
       && localProxyUp === lastRenderProxyUp && favsView === lastRenderFavsView
       && trendingView === lastRenderTrendingView
-      && visible.every((r) => { const el = cardByPage.get(r.page); return el && el.isConnected; })) {
+      && visible.every((r) => { const el = cardByPage.get(r.page); return !el || el.isConnected; })) {
     for (const [page, el] of cardByPage) {
       if (visiblePages.has(page)) continue;
       const img = el.querySelector("img");
@@ -1787,8 +2396,26 @@ function renderResults(results, reports, q) {
       if (imageObserver && img) imageObserver.unobserve(img);
       el.remove();
     }
-    cardByPage = new Map(visible.map((r) => [r.page, cardByPage.get(r.page)]));
-    for (const r of visible) box.appendChild(cardByPage.get(r.page));
+    // Favorite lookup for the cards built below (same per-render Set the
+    // full rebuild uses — isFav() was a linear scan, see below).
+    const favPages = new Set(favorites.map((f) => f.page));
+    const observer = getImageObserver();
+    const nextByPage = new Map();
+    for (const r of visible) {
+      let el = cardByPage.get(r.page);
+      if (!el) {
+        // New card: build it from the shared template, observe its image
+        // (or load it outright without an observer), and append it in
+        // order — exactly like the full rebuild does for every card.
+        const built = buildCard(r, favPages.has(r.page));
+        el = built.card;
+        if (observer) observer.observe(built.img);
+        else loadFullImage(built.img);
+      }
+      box.appendChild(el);
+      nextByPage.set(r.page, el);
+    }
+    cardByPage = nextByPage;
     restartPreload(); // same cards, new order — preload follows the new order
     return;
   }
@@ -1803,78 +2430,7 @@ function renderResults(results, reports, q) {
   // render instead; rebuilt here because `favorites` changes between
   // renders (and the fast path above returns before this point).
   const favPages = new Set(favorites.map((f) => f.page));
-  box.innerHTML = visible.map((r) => {
-    const res = (r.width && r.height) ? `${r.width}×${r.height}` : "size unknown";
-    // Thumb first: the small thumbnail loads in <1 s and fills the box
-    // immediately; the full-res image is swapped in by loadFullImage when
-    // the card nears the viewport (see the loader above). Full quality is
-    // still the end state — it just doesn't sit black while a 10-25 MB
-    // file downloads or stalls.
-    // The aspect-ratio lives on the ANCHOR, not the <img>: the box height
-    // is fixed from the known dimensions — or from the listing's aspect
-    // ratio when pixels are unknown (ratioW/ratioH) — and only falls back
-    // to 4:3 when even the ratio is unknown. Whatever loads then fills the
-    // box with object-fit: contain — never cropped, never distorted.
-    // The ratio is FROZEN at render: imgLoaded never rewrites it (see
-    // there). A loaded image only fills in the badge's real dimensions.
-    // Freezing is what keeps the masonry still — in CSS multi-column
-    // layout any height change rebalances the columns and reshuffles the
-    // visual order, so a "correction" on load moved cards and changed
-    // their order as the user scrolled.
-    // referrerpolicy=no-referrer avoids Referer-based hotlink blocks.
-    // Image URLs go through the local proxy when it is up (see
-    // proxiedImageUrl) — verified 2026-11-15 to un-stall Zerochan images.
-    const ratio = (r.width && r.height)
-      ? `aspect-ratio:${r.width} / ${r.height}`
-      : (r.ratioW && r.ratioH)
-        ? `aspect-ratio:${r.ratioW} / ${r.ratioH}`
-        : `aspect-ratio:4 / 3`;
-    const thumbSrc = proxiedImageUrl(r.thumb);
-    // The full image the card LINKS to is always the original (the anchor
-    // href and the "Full image" link below). What the card DISPLAYS can be
-    // smaller: for huge originals the adapter sets displayFull to the
-    // ~850px sample, which loads in a second where a 17–98 MB original
-    // stalls past the probe timeout (see the Danbooru adapter). The
-    // original stays the first fallback candidate, so a blocked sample
-    // still tries it before the card fails.
-    const displayFull = r.displayFull || r.full;
-    const fullUrl = proxiedImageUrl(r.full);
-    // displayFull is usually r.full itself — reuse fullUrl instead of
-    // re-running the proxy check on the same string (one fewer
-    // proxiedImageUrl call per card; identical output, same string).
-    const displayUrl = displayFull === r.full ? fullUrl : proxiedImageUrl(displayFull);
-    // What an upgrade of this card costs the preload meter (see preloadCost).
-    const cost = preloadCost(r);
-    const alts = [
-      ...(displayFull !== r.full ? [r.full] : []),
-      ...(r.alts || []).filter((u) => u && u !== r.full && u !== displayFull),
-    ].map(proxiedImageUrl);
-    // If the full image is proxy-routed (Zerochan, WallpaperCave), keep
-    // the direct URL as a final fallback candidate: a proxy that fails
-    // for this one image must not brick a card the direct fetch could
-    // still serve. The proxied URL is tried first, so a healthy proxy is
-    // never bypassed — and with no proxy configured the direct URL is
-    // already the primary, so nothing is appended. (fullUrl IS
-    // proxiedImageUrl(r.full), computed above — no second call per card.)
-    if (fullUrl !== r.full && !alts.includes(r.full)) alts.push(r.full);
-    // Favorite state read once per card, from the per-render Set above.
-    const fav = favPages.has(r.page);
-    return `
-    <article class="card">
-      <a class="thumb" href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${escapeHtml(thumbSrc)}" data-full="${escapeHtml(displayUrl)}" data-alts="${escapeHtml(alts.join("|"))}"${r.thumbOnly ? ' data-thumb-only="1"' : ""} data-cost="${cost}" data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
-        <span class="badge badge-res">${res}</span>
-        <span class="badge badge-src">${r.source}</span>
-      </a>
-      <div class="meta">
-        <div class="links">
-          <a href="${escapeHtml(r.page)}" target="_blank" rel="noopener">Source page ↗</a>
-          <a class="full-link" href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener">Full image ↗</a>
-          <button type="button" class="img-retry" data-action="retry-img" style="display:none">Retry</button>
-          <button type="button" class="fav-btn${fav ? " fav-on" : ""}" data-action="toggle-fav" data-page="${escapeHtml(r.page)}" aria-pressed="${fav ? "true" : "false"}" aria-label="Save to favorites" title="Save to favorites">${fav ? "♥" : "♡"}</button>
-        </div>
-      </div>
-    </article>`;
-  }).join("");
+  box.innerHTML = visible.map((r) => cardHtml(r, favPages.has(r.page))).join("");
   // Start full-res upgrades for cards near the viewport (the observer
   // fires for the rest as the user scrolls). Without IntersectionObserver,
   // load everything immediately.
@@ -1922,6 +2478,7 @@ async function search(ev) {
   if (!q) return;
   // Generation guard against overlapping loads (see viewSeq above).
   const seq = ++viewSeq;
+  searchLoading = true; // loadMore must not run while this fetch is in flight
   // A new search shows search results, not the Favorites or Trending view.
   setFavsView(false);
   setTrendingView(false);
@@ -1933,6 +2490,14 @@ async function search(ev) {
   preloadCount = 0;
   preloadStateByView.set(preloadViewKey, { spent: 0, count: 0 });
   updatePreloadMeter();
+  // New search session: the load-more state starts over too — the old
+  // cursors belong to the old query, and the render cap goes back to the
+  // Show limit. Reset here (not when the fetch finishes) so a load-more
+  // click racing the new search can't use stale cursors.
+  extraLimit = 0;
+  lastCursors = {};
+  lastSourceState = {};
+  moreLoading = false;
   renderSiteLinks(q);
 
   const chosen = $$(".source:checked").map((c) => c.value);
@@ -1951,9 +2516,16 @@ async function search(ev) {
   // are detached; the isConnected check in renderResults would reject them,
   // but there is no reason to keep holding them).
   cardByPage = new Map();
+  // The skeletons replace the cards — hide Load more until the new results
+  // render. (updateLoadMoreButton can't do this: it derives from the last
+  // render's counts, which are still the previous search's here.)
+  const lmBtn = loadMoreBtn();
+  if (lmBtn) lmBtn.hidden = true;
 
   const reports = [];
   const all = [];
+  const cursors = {}; // per-source next-page cursor for this search
+  const sourceState = {}; // per-source cumulative totals for the pills
   if (!chosen.length) {
     // All sources unchecked: say so in the pill instead of showing an
     // empty status line above a bare "No wallpapers found".
@@ -1975,10 +2547,27 @@ async function search(ev) {
       // such ("via corsfix — public proxy") so it doesn't read like the
       // healthy local-proxy path.
       reports.push(sourceReport(name, items, passing));
+      // Load-more cursor + pill totals for this source: the next page the
+      // adapter can fetch (null = exhausted / unsupported), and the
+      // cumulative totals the pill is built from (see lastSourceState).
+      // Only for successful fetches — a failed source has no cursor and
+      // keeps no totals, so loadMore never asks it for more.
+      if (items.nextCursor != null) cursors[name] = items.nextCursor;
+      sourceState[name] = {
+        passing: passing.length,
+        hidden: items.hidden || 0,
+        // The pill's "+" (checked scope) must survive a load-more rebuild
+        // (see loadMore): the scope is a per-source constant, so the
+        // initial value stands for every later batch.
+        hiddenScope: items.hiddenScope,
+        via: items.via || "",
+        empty: !!items.empty,
+      };
     } catch (err) {
       reports.push([name, err, false, 0]);
     }
   }));
+  searchLoading = false; // the fetch is done (render decision below is separate)
   // Keep the fetched set so a sort change can re-render without re-searching.
   // Assigned only when this load is still the newest: a stale load's data
   // must not replace the current search's — otherwise a sort change after
@@ -1987,6 +2576,8 @@ async function search(ev) {
     lastResults = all;
     lastReports = reports;
     lastQuery = q;
+    lastCursors = cursors;
+    lastSourceState = sourceState;
   }
   // Only the newest load renders — and only into the search view. A slow
   // load finishing after a newer search, a trending load, or a switch to
@@ -1997,10 +2588,17 @@ async function search(ev) {
 }
 
 $("#search-form").addEventListener("submit", search);
+// Load more button (round 8): below the grid, not inside it. Guarded
+// like the other optional controls — the harness DOM has the button
+// (see test-shim.mjs), a bare page without it just skips the wiring.
+const loadMoreBtnEl = $("#load-more");
+if (loadMoreBtnEl) loadMoreBtnEl.addEventListener("click", loadMore);
 $("#proxy").addEventListener("change", saveSettings);
 $("#worker-url").addEventListener("change", () => { saveSettings(); refreshProxyAndRerender(); });
 $("#purity").addEventListener("change", saveSettings);
 $("#wh-key").addEventListener("change", saveSettings);
+$("#gb-key").addEventListener("change", saveSettings);
+$("#gb-user").addEventListener("change", saveSettings);
 $("#sort").addEventListener("change", () => {
   saveSettings();
   if (favsView) renderFavsView();
@@ -2142,20 +2740,20 @@ function sourceReport(name, items, passing) {
   } else {
     msg = `${passing.length} found${viaLabel}`;
     if (name === "wallhaven" && wallColor()) msg += ` · color #${wallColor()}`;
-    // In Mixed mode, say what each source actually includes: Danbooru and
-    // Wallhaven filter by rating/purity; Safebooru is a safe-only site;
-    // the scraped sites have no purity filter at all. In Safe mode the
-    // pills read exactly as before.
+    // In Mixed mode, say what each source actually includes: Danbooru,
+    // Gelbooru and Wallhaven filter by rating/purity; Safebooru is a
+    // safe-only site; the scraped sites have no purity filter at all. In
+    // Safe mode the pills read exactly as before.
     if (purity() === "mixed") {
-      if (name === "danbooru" || name === "wallhaven") msg += " · incl. suggestive";
+      if (name === "danbooru" || name === "wallhaven" || name === "gelbooru") msg += " · incl. suggestive";
       else if (name === "safebooru") msg += " · safe-only site";
       else msg += " · no purity filter";
     } else if (purity() === "nsfw") {
-      // NSFW mode: Danbooru returns explicit posts; Wallhaven only works
-      // with an API key (the adapter throws without one, so reaching here
-      // means a key was set); Safebooru returns nothing by design; the
-      // scraped sites have no purity filter at all.
-      if (name === "danbooru") msg += " · explicit only";
+      // NSFW mode: Danbooru and Gelbooru return explicit posts; Wallhaven
+      // only works with an API key (the adapter throws without one, so
+      // reaching here means a key was set); Safebooru returns nothing by
+      // design; the scraped sites have no purity filter at all.
+      if (name === "danbooru" || name === "gelbooru") msg += " · explicit only";
       else if (name === "wallhaven") msg += " · NSFW (API key set)";
       else if (name === "safebooru") msg += " · safe-only site";
       else msg += " · no purity filter";
@@ -2164,7 +2762,13 @@ function sourceReport(name, items, passing) {
   const hidden = items.hidden || 0;
   const m = minRes();
   if (hidden > 0 && m) {
-    msg += ` · ${hidden.toLocaleString()} below ${m.w}×${m.h} — lower the filter to see them`;
+    // Exact counts (Danbooru, Wallhaven) cover the whole database; checked
+    // counts (Safebooru, scrapers) cover only the pages actually fetched,
+    // so there may be more — the "+" says "at least". One character, the
+    // pill stays the same length otherwise.
+    const n = items.hiddenScope === "checked"
+      ? `${hidden.toLocaleString()}+` : hidden.toLocaleString();
+    msg += ` · ${n} below ${m.w}×${m.h} — lower the filter to see them`;
   }
   return [name, msg, true, hidden];
 }
@@ -2247,6 +2851,10 @@ async function loadTrending(force) {
   resultsBox().innerHTML = Array.from({ length: 8 }, () =>
     `<div class="skeleton" aria-hidden="true"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>`).join("");
   cardByPage = new Map();
+  // Load more belongs to the search view, not Trending — hide it while
+  // the trending cards load (renderResults hides it again once they do).
+  const lmBtnT = loadMoreBtn();
+  if (lmBtnT) lmBtnT.hidden = true;
 
   const reports = [];
   const all = [];
@@ -2307,6 +2915,20 @@ resultsBox().addEventListener("click", (ev) => {
     img.dataset.failReason = "";
     retryBtn.style.display = "none";
     loadFullImage(img);
+    return;
+  }
+  const tagBtn = ev.target.closest('[data-action="search-tag"]');
+  if (tagBtn) {
+    // Click a tag to search it — the same path as a Trending chip (see
+    // the chip handler): the term goes into the search box and the form
+    // is submitted. The normal search formats it per source (booru
+    // underscores, Wallhaven plain text), and search() exits the
+    // Favorites/Trending view. dataset.tag is the decoded attribute
+    // value, so a tag with spaces or quotes survives the round trip.
+    const tag = tagBtn.dataset.tag || "";
+    if (!tag) return;
+    staticEl("query").value = tag;
+    $("#search-form").requestSubmit();
     return;
   }
   const favBtn = ev.target.closest('[data-action="toggle-fav"]');
