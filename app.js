@@ -183,7 +183,22 @@ function loadSettings() {
   const limEl = staticEl("limit");
   if (limEl) {
     const lim = localStorage.getItem("wms.limit");
-    limEl.value = ["50", "100", "150", "200", "0"].includes(lim) ? lim : "100";
+    // Round 13: the default is now All (0), not 100. A stored "100" is
+    // almost always the old default, not an explicit choice — 100 was the
+    // only default the app ever had — so migrate it once, so returning
+    // users get the new default too (changing the HTML default alone
+    // does nothing for anyone with a stored value). The flag stops it
+    // re-applying, so anyone who really wants 100 re-picks it once and
+    // it sticks. The migrated value is written back immediately: without
+    // that, a user who never touches Settings would fall back to the
+    // stored "100" on the next load.
+    let limVal = ["50", "100", "150", "200", "0"].includes(lim) ? lim : "0";
+    if (localStorage.getItem("wms.limitMigrated13") !== "1" && limVal === "100") {
+      limVal = "0";
+      localStorage.setItem("wms.limit", "0");
+    }
+    localStorage.setItem("wms.limitMigrated13", "1");
+    limEl.value = limVal;
   }
   const preloadEl = staticEl("data-preload");
   if (preloadEl) {
@@ -313,7 +328,7 @@ function minRes() {
 // How many search results to render: 50 / 100 / 150 / 200, or 0 = All.
 // "0" follows the min-res "0" = Any pattern (a truthy string — never
 // compare it numerically without this check). An unknown value falls back
-// to the default 100 rather than hiding everything or nothing.
+// to the default (All, 0) rather than hiding everything or nothing.
 let limitElCache = null;
 function resultLimit() {
   // Static control, cached like the others (see resultsBox) — the value is
@@ -323,7 +338,7 @@ function resultLimit() {
   const v = el ? el.value : "";
   if (!v || v === "0") return 0;
   const n = parseInt(v, 10);
-  return [50, 100, 150, 200].includes(n) ? n : 100;
+  return [50, 100, 150, 200].includes(n) ? n : 0;
 }
 function passesMinRes(r, m = minRes()) {
   // Unknown sizes (0x0 — some scraped sites don't show resolution) pass
@@ -1371,7 +1386,15 @@ async function loadMore() {
   // (AN5); only the batch base moves, and only when the batch actually
   // added cards — an all-dupe/failed click leaves the budget alone.
   if (addedFresh) resetPreloadBatch();
-  extraLimit += LOAD_MORE_STEP;
+  // Only raise the render cap when a cap is actually in force (round 13).
+  // At All (limit 0) the cap never constrains anything — effLimit ignores
+  // extraLimit there — so an unconditional bump is dead state that LEAKS:
+  // two Load more clicks at All leave extraLimit at 200, and switching
+  // the select to "100 wallpapers" afterwards shows 300 cards under a
+  // "100" label with no pill (the debugger's BH1). The fetch above is
+  // Load more's real job at All; the bump is only for revealing pool
+  // items a cap was hiding.
+  if (resultLimit() > 0) extraLimit += LOAD_MORE_STEP;
   renderResults(lastResults, lastReports, lastQuery);
   updateLoadMoreButton();
 }

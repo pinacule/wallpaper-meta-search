@@ -326,7 +326,46 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.16 (round 12 — the meter/filter divergence, 2026-11-16)
+## Changes in v5.17 (round 13 — Show defaults to All, 2026-11-16)
+
+- **Show now defaults to All wallpapers**: the user asked for the
+  default to be All so the amount is never capped — the Show select
+  now opens on "All wallpapers" instead of "100 wallpapers". The
+  limit is saved in the browser (`wms.limit`), so changing the
+  dropdown default alone would have done nothing for anyone who
+  already used the site: a stored "100" is migrated to All once
+  (flag `wms.limitMigrated13`, written back immediately), since 100
+  was the only default the app ever had and a stored 100 is almost
+  always the old default, not an explicit choice. Anyone who really
+  wants 100 re-picks it once and it sticks; other stored values
+  (50/150/200/All) are untouched. The 100 option stays pickable.
+- **Debugger pass (1 real bug fixed)**: `extraLimit` accumulated at
+  All and leaked into a later explicit-limit switch — two Load more
+  clicks at All left `extraLimit` at 200, and switching the select
+  to "100 wallpapers" afterwards showed 300 cards under a "100"
+  label with no pill. The cap raise now only happens when a cap is
+  actually in force (`if (resultLimit() > 0)`); at All, Load more's
+  real job is just fetching the next page. Verified clean: the
+  migration can't fire twice or after a re-pick, a stored "0"
+  round-trips through save/load, the pill stays hidden at All, Load
+  more works to exhaustion ("No more results", second click a
+  no-op), and the other hardcoded 100s (booru fetch target, Load
+  more step, Danbooru purity tag) are not show-limit defaults.
+- **Optimizer pass (nothing left to take, 5 guards)**: measured at
+  the largest pool (~600 cards, max fetch/search is 638) — full
+  rebuild ~49–110ms and growing render linear in new cards in the
+  shim (noise-dominated, no bad scaling); the counts walk is the
+  only per-card-load cost, ~60ms per 600-card drain in a real
+  browser (600 walks × ~0.10ms), spread over a network-bound drain
+  that takes seconds — not worth a running counter (same reason as
+  rounds 10 and 12: drift risks wrong user-visible counts).
+  Round-2 claims re-verified (parallel pages ~151–152ms, growing
+  beats rebuild, Gelbooru no-key = 0 fetches, 0 queries while
+  pumping at 600 cards).
+- QA harness 557 checks (537 + 8 Show-All + 7 debugger + 5
+  optimizer), optimizer all green.
+
+## Changes in v5.16 (round 12 — the meter/filter divergence, 2026-11-16 — pushed as 403290f9)
 
 - **The meter now always agrees with the filter row**: the v5.15
   browser test caught the meter stuck on "Ready · 34 wallpapers"
