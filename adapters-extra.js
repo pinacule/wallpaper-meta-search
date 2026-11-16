@@ -433,32 +433,46 @@ const EXTRA_SOURCES = {
       items.via = via;
       return markHidden(items);
     }
-    // Second page: the search page infinite-scrolls via
-    // alphacoders.com/search/view?q=<q>&page=2&quickload=1 (verified live
+    // Pages 2-4: the search page infinite-scrolls via
+    // alphacoders.com/search/view?q=<q>&page=N&quickload=1 (verified live
     // 2026-11-15: returns new items in the same markup; the plain
     // search.php?page=2 returns page 1 again). Its URL is built from the
     // query alone — unlike Wallpapers.com / Zerochan, whose page 2 needs a
-    // link from page 1 — so both pages fetch concurrently instead of
+    // link from page 1 — so all pages fetch concurrently instead of
     // sequentially: one round-trip saved per search (measured in node:
     // ~250 ms at local-proxy speed, up to ~20 s on the slow public
-    // proxies). allSettled: page 1 still throws if it fails (page 2's
-    // result is then ignored — one wasted fetch in that failure case),
-    // and a failed page 2 still just leaves the page-1 results standing.
-    const [p1, p2] = await Promise.allSettled([
+    // proxies). allSettled: page 1 still throws if it fails (the other
+    // pages' results are then ignored — wasted fetches in that failure
+    // case), and a failed later page still just leaves the earlier
+    // results standing. Round 10: pages 3+4 ride along concurrently (the
+    // same search/view endpoint load more already uses) — AlphaCoders was
+    // a small source in the user's "cyberpunk" search (15 from 2 pages),
+    // and more pages are the only way to give it a fair slice. Pages are
+    // processed in order and stop at the first failed page (the cursor
+    // points at it, so load more retries it); a page that succeeds is
+    // used even if a later one fails.
+    const [p1, p2, p3, p4] = await Promise.allSettled([
       fetchHtml(`https://wall.alphacoders.com/search.php?search=${encodeURIComponent(q)}`),
       fetchHtml(`https://alphacoders.com/search/view?q=${encodeURIComponent(q)}&page=2&quickload=1`),
+      fetchHtml(`https://alphacoders.com/search/view?q=${encodeURIComponent(q)}&page=3&quickload=1`),
+      fetchHtml(`https://alphacoders.com/search/view?q=${encodeURIComponent(q)}&page=4&quickload=1`),
     ]);
     if (p1.status === "rejected") throw p1.reason;
     const { text: html, via } = p1.value;
     const pages = [html];
-    if (p2.status === "fulfilled") pages.push(p2.value.text);
+    let nextCursor = 5;
+    for (const [page, res] of [[2, p2], [3, p3], [4, p4]]) {
+      if (res.status === "rejected") { nextCursor = page; break; }
+      pages.push(res.value.text);
+      nextCursor = page + 1;
+    }
     const out = cap80(dedupe(pages.flatMap((pageHtml) => parseAlphaCodersPage(pageHtml))));
     if (!out.length) throw new Error("no results parsed from AlphaCoders");
-    // Load-more cursor: page 3 when page 2 arrived, page 2 when it
-    // failed (retry it on load more instead of skipping it). Whether
-    // page 2 is the last one can't be told from here — the first
+    // Load-more cursor: the next page not yet PROCESSED (a failed page is
+    // retried on load more instead of being skipped). Whether the last
+    // fetched page is the last one can't be told from here — the first
     // load-more fetch that comes back empty marks the source exhausted.
-    out.nextCursor = p2.status === "fulfilled" ? 3 : 2;
+    out.nextCursor = nextCursor;
     out.exhausted = false;
     out.via = via;
     return markHidden(out);
@@ -492,23 +506,29 @@ const EXTRA_SOURCES = {
     const { text: html, via } = await fetchHtml(`https://www.zerochan.net/search?q=${encodeURIComponent(q)}`);
     const out = [];
     parseZerochanPage(html, out);
-    // Second page: search redirects to a tag page (the canonical link,
-    // e.g. /Nekomimi), and ?p=2 works THERE — ?p=2 on /search itself is
+    // Pages 2-4: search redirects to a tag page (the canonical link,
+    // e.g. /Nekomimi), and ?p=N works THERE — ?p=2 on /search itself is
     // ignored and returns page 1 again (verified live 2026-11-15:
-    // /Nekomimi?p=2 returned 48 new ids, 0 overlap). A failed page-2
-    // fetch just leaves the page-1 results standing.
+    // /Nekomimi?p=2 returned 48 new ids, 0 overlap). Round 10: fetch
+    // pages 2, 3 and 4 concurrently (their URLs are all derivable from
+    // the canonical once page 1 returns it) — Zerochan was the smallest
+    // source in the user's "cyberpunk" search (17 from 2 pages at a ~21%
+    // min-res pass rate), and more pages are the only way to give it a
+    // fair slice. Pages are processed in order and stop at the first
+    // failed page (the cursor points at it, so load more retries it); a
+    // page that succeeds is used even if a later one fails.
     let nextCursor = null;
     const canon = /<link rel="canonical" href="(https:\/\/www\.zerochan\.net\/[^"]+)"/.exec(html);
     if (canon && !/\/search/.test(canon[1])) {
       const sep = canon[1].includes("?") ? "&" : "?";
-      const p2url = `${canon[1]}${sep}p=2`;
-      try {
-        const { text: html2 } = await fetchHtml(p2url);
-        parseZerochanPage(html2, out);
-        nextCursor = `${canon[1]}${sep}p=3`;
-      } catch {
-        // Page 2 failed: retry it on load more instead of skipping to p=3.
-        nextCursor = p2url;
+      const pageUrl = (n) => `${canon[1]}${sep}p=${n}`;
+      const settled = await Promise.allSettled([2, 3, 4].map((n) => fetchHtml(pageUrl(n))));
+      for (let i = 0; i < settled.length; i++) {
+        const n = i + 2;
+        const s = settled[i];
+        if (s.status === "rejected") { nextCursor = pageUrl(n); break; }
+        parseZerochanPage(s.value.text, out);
+        nextCursor = pageUrl(n + 1);
       }
     }
     const items = dedupe(out);

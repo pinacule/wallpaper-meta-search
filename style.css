@@ -567,7 +567,11 @@ code {
 /* Shown when every URL for a card failed (see markImageFailed in app.js):
    same reserved box, no removal, no jump — the card's links keep working.
    pointer-events:none so a click still opens the anchor's full-image
-   link. Badges sit above it (z-index 2). */
+   link. Badges sit above it (z-index 2). The content is kept short on
+   purpose: .card has overflow:hidden, and the shortest card (a 240px
+   column at 21:9, ~103px tall) must fit icon + two text lines + padding
+   or the reason line clips — 24px icon + 2x6px gaps + ~20px message +
+   ~18px reason + 2x10px padding = ~94px. */
 .img-placeholder {
   position: absolute;
   inset: 0;
@@ -576,13 +580,13 @@ code {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
   background: #232323;
   color: var(--muted);
   font-size: .85rem;
   line-height: 1.4;
   text-align: center;
-  padding: 12px;
+  padding: 10px;
   pointer-events: none;
 }
 .img-placeholder svg { opacity: .6; }
@@ -609,6 +613,15 @@ code {
 }
 .badge-res { left: 8px; }
 .badge-src { right: 8px; color: var(--accent-ink); }
+/* "Preview only" note: shown when the full-res upgrade failed but the
+   thumbnail is displaying (see markFullFailed in app.js) — the card is
+   NOT broken, it just never got its full image. Bottom-left, under the
+   always-visible top badges; the meta bar covers it on hover/touch, when
+   the Retry button is visible instead. Hidden by default (the `hidden`
+   attribute); the author [hidden] rule below is needed because .badge
+   is positioned, like .img-placeholder's. */
+.badge-full-failed { top: auto; bottom: 8px; left: 8px; }
+.badge-full-failed[hidden] { display: none; }
 /* Source / Full image / heart row: a solid dark bar at the bottom of the
    image, shown only while hovering (or tabbing through) the card. No
    gradient scrim — flat colour only. The image itself stays one big link
@@ -1044,6 +1057,12 @@ footer p { margin: 0; max-width: 80ch; }
   font-weight: 600;
 }
 .preload-meter[hidden] { display: none; }
+/* Loading animation (round 10): the spinner only spins while the pump is
+   actually running (is-loading) — a paused/ready meter is still, so the
+   state reads at a glance. 12px, inside the one-line height the reserve
+   already pins, so it costs no extra height. */
+.preload-meter .spinner { display: none; }
+.preload-meter.is-loading .spinner { display: inline-block; }
 /* The meter lives above #status, outside the round-4 reserve — when it
    appears or disappears it moves the grid by its full height (~33px at
    desktop: ~21px line + 12px margins), the likeliest cause of the v5.9
@@ -1077,9 +1096,9 @@ main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)) #pre
   visibility: hidden;
   min-height: calc(1.32rem + 12px);
 }
-@media (max-width: 480px) {
-  /* Phones: the shown meter wraps to two text lines at 412px (text +
-     bar are ~458px of content against a 384px line, and flex shrink
+@media (max-width: 640px) {
+  /* Narrow widths: the shown meter wraps to two text lines (text + bar
+     are ~458px of content against a 384px line at 412px, and flex shrink
      leaves the text ~257px wide — the "Preloading…" line breaks after
      "MB /"), ~54px against the one-line 33px the empty reserved meter
      would otherwise occupy — so the grid would still jump ~21px when
@@ -1087,7 +1106,15 @@ main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)) #pre
      of 1.32rem (0.88rem at line-height 1.5) + 12px margins. Same
      estimate class as the status phone rung: right to about a line
      either way; a one-line shown meter leaves ~7px dead space, a
-     three-line one a smaller residual shift. */
+     three-line one a smaller residual shift.
+     ROUND 10 debugger (AW2): the rung used to end at 480px, but the
+     meter still wraps to two lines up to ~605px — the round-10 Paused
+     text ("Paused — target reached · N wallpapers · X / Y") is 14
+     chars longer than the loading text, so at 520–605px the meter is
+     one line while loading and grows to two the moment the target is
+     reached: a ~21px async shift on a settled grid. The rung now runs
+     to 640px, past the Paused text's one-line breakpoint (~605px at
+     7px/char); above that every meter state fits one line. */
   main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)) #preload-meter[hidden] {
     min-height: calc(2.64rem + 12px);
   }
@@ -1106,6 +1133,65 @@ main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)) #pre
   border-radius: 999px;
   background: var(--accent);
   transition: width .2s ease;
+}
+
+/* Loaded-only grid (round 10): when a preload target is set, the main
+   grid shows only cards whose full image is ready — no unloaded
+   placeholders. The hiding is CSS (display:none on the card), so a card
+   flips visible the moment its .is-loaded class lands, with no re-render,
+   and the pump keeps working on the hidden ones (they're still connected;
+   the probe queue doesn't care about visibility). "pending" is the inverse
+   — the stragglers, one click away. The classes live on #results, so a
+   re-render never drops them; Favorites/Trending never set them. */
+#results.show-loaded .card:not(.is-loaded) { display: none; }
+#results.show-pending .card.is-loaded { display: none; }
+
+/* Loaded filter row (round 10): the three-way switch for the grid above —
+   Loaded (the "insta view loaded wallpapers" button), Not ready, All.
+   Same ghost-toggle language as the Favorites toggle. Shown only in the
+   search view with a preload target set; it appears when the user sets a
+   target or a search renders, never asynchronously mid-load, so it needs
+   no reserve (unlike the meter). */
+.loaded-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0 10px;
+}
+.loaded-filter[hidden] { display: none; }
+.filter-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  color: var(--muted);
+  font: inherit;
+  font-size: .88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.filter-btn:hover { border-color: #4a4a4a; color: var(--text); }
+.filter-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: #f0d48a;
+}
+
+/* Load more at the top (round 10): the same action as the bottom button,
+   above the grid. Its row is reserved like the meter's — it sits above
+   the grid, so appearing would push the grid down. Hidden but reserved
+   whenever the grid has cards/skeletons (not Favorites, not Trending —
+   the button never shows in Trending, so reserving its slot there would
+   be ~54px of permanent dead space above the toplist; AW4). */
+.load-more-row-top { margin: 0 0 12px; }
+.load-more-row-top[hidden] { display: none; }
+#load-more-top { margin-top: 0; }
+#load-more-top:disabled { opacity: .5; cursor: default; }
+#load-more-top:disabled:hover { background: transparent; }
+main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)):not(:has(#tab-trending.active)) .load-more-row-top[hidden] {
+  display: block;
+  visibility: hidden;
 }
 
 /* ---------- Search / Trending tabs ----------

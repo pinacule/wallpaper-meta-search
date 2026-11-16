@@ -218,11 +218,22 @@
     </section>
 
     <span id="preload-meter" class="preload-meter" hidden>
+      <span class="spinner" aria-hidden="true"></span>
       <span class="preload-meter-text"></span>
       <span class="preload-meter-bar" aria-hidden="true"><span class="preload-meter-fill"></span></span>
     </span>
 
+    <div id="loaded-filter" class="loaded-filter" hidden>
+      <button type="button" id="filter-loaded" class="filter-btn" data-filter="loaded" aria-pressed="true">✓ Loaded (0)</button>
+      <button type="button" id="filter-pending" class="filter-btn" data-filter="pending" aria-pressed="false">Not ready (0)</button>
+      <button type="button" id="filter-all" class="filter-btn" data-filter="all" aria-pressed="false">All (0)</button>
+    </div>
+
     <div id="status" class="status-row" aria-live="polite"></div>
+
+    <div class="load-more-row load-more-row-top" id="load-more-top-row" hidden>
+      <button type="button" id="load-more-top" class="btn-ghost">Load more</button>
+    </div>
 
     <section id="results" class="results" aria-live="polite">
       <div class="empty-state idle">

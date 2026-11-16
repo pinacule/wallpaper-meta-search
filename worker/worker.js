@@ -23,8 +23,13 @@ const ALLOWED = [
   // throttles direct bursts. Both hosts are wallpaper-only, so the worker
   // still can't be abused as a general open proxy. (WallpaperCave images
   // are already covered by the wallpapercave.com pattern above.)
+  // Danbooru's CDN (cdn.donmai.us): same treatment — a huge file failed
+  // in-grid on a slow VPN link while the proxied sources rendered fine
+  // (field report 2026-11-16); the proxy's server-side fetch is the
+  // healthier path for this host.
   /^https:\/\/static\.zerochan\.net\//,
   /^https:\/\/s3\.zerochan\.net\//,
+  /^https:\/\/cdn\.donmai\.us\//,
 ];
 
 const CORS = {

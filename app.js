@@ -34,13 +34,21 @@ const pageIsHttp = typeof window !== "undefined" && window.location.protocol ===
 //     throttles the burst of direct image requests from one browser. The
 //     proxy fetches server-side (one egress, no burst), and the direct URL
 //     stays as a fallback candidate (see renderResults).
+//   Danbooru (cdn.donmai.us): a 3220x5400 card failed in-grid on a slow
+//     VPN link while the proxied sources rendered fine (field report
+//     2026-11-16) — the proxy's server-side fetch with streaming is the
+//     healthier path for this CDN, and the local proxy already allows
+//     the host (proxy/server.mjs) as does the Worker (worker/worker.js).
+//     The proxy is only used when it is up; when it is down (or no
+//     Worker is set) proxiedImageUrl returns the direct URL, so a
+//     missing proxy can never break Danbooru — it just loads direct.
 // The proxy is the local one when it is up (localhost pages only), else the
 // user's Cloudflare Worker when one is set and answering (workerUp —
 // probed at startup like the local proxy). With neither configured the
 // images load direct, as before.
 // NOTE: a proxy does NOT change the egress IP, so it can't dodge an
 // IP-based block (e.g. a CDN 403ing a datacenter/VPN IP).
-const IMAGE_PROXY_HOSTS = new Set(["static.zerochan.net", "s3.zerochan.net", "wallpapercave.com"]);
+const IMAGE_PROXY_HOSTS = new Set(["static.zerochan.net", "s3.zerochan.net", "wallpapercave.com", "cdn.donmai.us"]);
 let workerUp = false; // the configured Worker answered its health probe
 let workerUrlElCache = null;
 // The results/status boxes never leave the page, but renderResults,
@@ -132,9 +140,11 @@ function proxiedImageUrl(u) {
 // from there.
 
 // Sites without inline results: open their own search in a new tab.
+// (Wallhaven and Gelbooru are inline now, so they are NOT here — see
+// SOURCES. The scrapers in adapters-extra.js drop their own sites from
+// this list when they register.)
 const SITE_LINKS = [
   ["WallpaperAccess", (q) => `https://wallpaperaccess.com/search?q=${encodeURIComponent(q)}`],
-  ["Wallhaven", (q) => `https://wallhaven.cc/search?q=${encodeURIComponent(q)}`],
   ["Google Images", (q) => `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(q + " wallpaper")}`],
 ];
 
@@ -396,6 +406,27 @@ const BOORU_TARGET = 100;
 const BOORU_MAX_PAGES = 2;
 const BOORU_PAGE_SIZE = 200;
 const BOORU_PAGE_DELAY_MS = 250;
+// Round 10: the booru initial fetch can page past pid 1 when the target
+// isn't met — the min-res filter can hide most of two pages, and stopping
+// at pid 1 then leaves the source short for no reason other than an
+// arbitrary page count. Pids 0+1 fetch concurrently; the extra-pid loop
+// is sequential (one pid at a time, so a query that meets its target from
+// pid 0+1 pays nothing extra) and bounded by this cap (pids 0-4, i.e. up
+// to 3 extra sequential fetches).
+const BOORU_DAPI_MAX_PID = 4;
+
+// Fetched-but-unprocessed booru page (round 10 optimizer): Safebooru and
+// Gelbooru fetch pids 0+1 concurrently; when pid 0 alone meets the target,
+// pid 1's data used to be discarded and the first load-more click re-fetched
+// the same page — one wasted request per search per source in the common
+// no-min-res case. One entry per source, keyed by the fetch fingerprint
+// (tags incl. purity + min-res), so load more serves it from memory.
+// Cleared at the start of each initial fetch, so a stale page from an
+// earlier search can never be served; consumed (deleted) on use.
+const booruPageStash = new Map(); // source -> { fp, pid, data, via }
+function booruStashFp(tags, m) {
+  return `${tags}|${m ? `${m.w}x${m.h}` : "any"}`;
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -579,8 +610,15 @@ const SOURCES = {
         // ~850px sample would load in a second. Show the sample in the
         // grid instead (displayFull); the Full image link still opens the
         // original. The sample is also the first probe candidate, with the
-        // original as a fallback (see the card template).
-        const huge = (typeof p.file_size === "number" && p.file_size > 15 * 1024 * 1024)
+        // original as a fallback (see the card template). The 5 MB line is
+        // the probe budget expressed as a size: a 5 MB file needs ~2.7 Mbps
+        // sustained for the full 15 s, so anything above it times out on a
+        // slow or VPN link (field report 2026-11-16: a 3220x5400 card
+        // failed in-grid while its sample would have loaded in ~1 s). The
+        // old 15 MB line only caught the worst cases. The sample is ~850px
+        // on the long side — visually identical in a ~300px card — and the
+        // preload meter charges the sample's cost, not the original's.
+        const huge = (typeof p.file_size === "number" && p.file_size > 5 * 1024 * 1024)
           || p.image_width > 6000;
         const displayFull = huge && p.large_file_url && p.large_file_url !== full
           ? p.large_file_url : null;
@@ -700,7 +738,18 @@ const SOURCES = {
     // and leaves the cursor alone, so the next click retries the same pid.
     if (opts.more) {
       const pid = opts.startPid;
-      const { data, via: v } = await fetchPage(pid);
+      // Stashed pid 1 (see below): the initial fetch already downloaded
+      // this page — serve it from memory instead of fetching it twice.
+      // A fingerprint mismatch (query/purity/min-res changed since the
+      // search) falls through to a fresh fetch, as before.
+      const stashed = booruPageStash.get("safebooru");
+      let data, v;
+      if (stashed && stashed.pid === pid && stashed.fp === booruStashFp(tags, m)) {
+        booruPageStash.delete("safebooru");
+        ({ data, via: v } = stashed);
+      } else {
+        ({ data, via: v } = await fetchPage(pid));
+      }
       via = v;
       const full = processPage(data);
       out.hidden = hidden;
@@ -723,8 +772,12 @@ const SOURCES = {
     // source; partial results are the better outcome there, and the
     // success path is identical (same items, same order, same counts, same
     // `via` — the last page actually used). When page 0 already meets the
-    // target or is the last page (< 200 items), page 1 was fetched anyway
-    // and is ignored.
+    // target or is the last page (< 200 items), page 1 was fetched anyway;
+    // when the target is met it is stashed for load more (see below)
+    // instead of being ignored.
+    // A new initial fetch invalidates any stashed page from an earlier
+    // search (a rejected pid 1 must not leave an old page behind).
+    booruPageStash.delete("safebooru");
     const [p0, p1] = await Promise.allSettled([fetchPage(0), fetchPage(1)]);
     if (p0.status === "rejected") throw p0.reason;
     via = p0.value.via;
@@ -735,16 +788,45 @@ const SOURCES = {
       full1 = processPage(p1.value.data);
       pid1Processed = true;
     }
+    // Pid 1 fetched but not needed (pid 0 met the target): stash it for
+    // the first load-more click instead of discarding it — the cursor
+    // below already points at pid 1, so load more serves this page from
+    // memory. A short pid 0 means there is no pid 1 at all (nothing to
+    // stash, and the cursor is null anyway).
+    if (!pid1Processed && p1.status === "fulfilled" && full0 && out.length >= BOORU_TARGET) {
+      booruPageStash.set("safebooru", { fp: booruStashFp(tags, m), pid: 1, data: p1.value.data, via: p1.value.via });
+    }
+    // Round 10: keep paging while the target isn't met and pages keep
+    // coming back full. Pids 0+1 fetch concurrently; the extra pids are
+    // fetched sequentially, one at a time, so a query that meets its
+    // target from pid 0+1 pays nothing extra, and the BOORU_DAPI_MAX_PID
+    // cap bounds the worst case. A failed extra pid just leaves the
+    // earlier results standing (the cursor points at it, so load more
+    // retries it); a pid 1 that was rejected in the concurrent pair is
+    // retried fresh here instead of being skipped.
+    let nextPid = pid1Processed ? 2 : 1;
+    let lastFull = pid1Processed ? full1 : full0;
+    while (out.length < BOORU_TARGET && lastFull && nextPid <= BOORU_DAPI_MAX_PID) {
+      try {
+        const { data, via: v } = await fetchPage(nextPid);
+        via = v;
+        lastFull = processPage(data);
+        nextPid++;
+      } catch {
+        break;
+      }
+    }
     out.hidden = hidden;
     out.hiddenScope = "checked"; // only among the pages actually fetched
     out.examined = examined;
     out.via = via;
-    // Load-more cursor: the next pid not yet PROCESSED. Pid 1 was fetched
+    // Load-more cursor: the next pid not yet PROCESSED, or null when the
+    // last processed page was short (no more pages). Pid 1 was fetched
     // alongside pid 0 but is only processed when pid 0 alone doesn't meet
-    // the target — when it wasn't processed, the first load-more click
-    // re-fetches it (one wasted request in the initial fetch, not a gap
-    // in the results). A short pid 0 means there is no pid 1 at all.
-    out.nextCursor = !full0 ? null : (!pid1Processed ? 1 : (full1 ? 2 : null));
+    // the target — when it wasn't processed it sits in booruPageStash, so
+    // the first load-more click serves it from memory instead of
+    // re-fetching it. A short pid 0 means there is no pid 1 at all.
+    out.nextCursor = lastFull ? nextPid : null;
     out.exhausted = out.nextCursor === null;
     return out;
   },
@@ -823,7 +905,18 @@ const SOURCES = {
     // and leaves the cursor alone, so the next click retries the same pid.
     if (opts.more) {
       const pid = opts.startPid;
-      const { data, via: v } = await fetchPage(pid);
+      // Stashed pid 1 (see below): the initial fetch already downloaded
+      // this page — serve it from memory instead of fetching it twice.
+      // A fingerprint mismatch (query/purity/min-res changed since the
+      // search) falls through to a fresh fetch, as before.
+      const stashed = booruPageStash.get("gelbooru");
+      let data, v;
+      if (stashed && stashed.pid === pid && stashed.fp === booruStashFp(tags, m)) {
+        booruPageStash.delete("gelbooru");
+        ({ data, via: v } = stashed);
+      } else {
+        ({ data, via: v } = await fetchPage(pid));
+      }
       via = v;
       const full = processPage(data);
       out.hidden = hidden;
@@ -834,6 +927,9 @@ const SOURCES = {
       out.exhausted = !full;
       return out;
     }
+    // A new initial fetch invalidates any stashed page from an earlier
+    // search (a rejected pid 1 must not leave an old page behind).
+    booruPageStash.delete("gelbooru");
     const [p0, p1] = await Promise.allSettled([fetchPage(0), fetchPage(1)]);
     if (p0.status === "rejected") throw p0.reason;
     via = p0.value.via;
@@ -844,14 +940,39 @@ const SOURCES = {
       full1 = processPage(p1.value.data);
       pid1Processed = true;
     }
+    // Pid 1 fetched but not needed (pid 0 met the target): stash it for
+    // the first load-more click, same as Safebooru.
+    if (!pid1Processed && p1.status === "fulfilled" && full0 && out.length >= BOORU_TARGET) {
+      booruPageStash.set("gelbooru", { fp: booruStashFp(tags, m), pid: 1, data: p1.value.data, via: p1.value.via });
+    }
+    // Round 10: keep paging while the target isn't met and pages keep
+    // coming back full. Pids 0+1 fetch concurrently; the extra pids are
+    // fetched sequentially, one at a time, so a query that meets its
+    // target from pid 0+1 pays nothing extra, and the BOORU_DAPI_MAX_PID
+    // cap bounds the worst case. A failed extra pid just leaves the
+    // earlier results standing (the cursor points at it, so load more
+    // retries it); a pid 1 that was rejected in the concurrent pair is
+    // retried fresh here instead of being skipped.
+    let nextPid = pid1Processed ? 2 : 1;
+    let lastFull = pid1Processed ? full1 : full0;
+    while (out.length < BOORU_TARGET && lastFull && nextPid <= BOORU_DAPI_MAX_PID) {
+      try {
+        const { data, via: v } = await fetchPage(nextPid);
+        via = v;
+        lastFull = processPage(data);
+        nextPid++;
+      } catch {
+        break;
+      }
+    }
     out.hidden = hidden;
     out.hiddenScope = "checked"; // only among the pages actually fetched
     out.examined = examined;
     out.via = via;
-    // Load-more cursor: the next pid not yet PROCESSED (same pattern as
-    // Safebooru — pid 1 was fetched alongside pid 0 but is only processed
-    // when pid 0 alone doesn't meet the target).
-    out.nextCursor = !full0 ? null : (!pid1Processed ? 1 : (full1 ? 2 : null));
+    // Load-more cursor: the next pid not yet PROCESSED, or null when the
+    // last processed page was short (no more pages) — same pattern as
+    // Safebooru, including the booruPageStash for an unprocessed pid 1.
+    out.nextCursor = lastFull ? nextPid : null;
     out.exhausted = out.nextCursor === null;
     return out;
   },
@@ -952,20 +1073,34 @@ const SOURCES = {
         .then(({ data }) => (typeof data.meta?.total === "number" ? data.meta.total : null))
         .catch(() => null);
     }
-    const [p1, p2] = await Promise.allSettled([fetchPage(1), fetchPage(2)]);
-    if (p1.status === "rejected") throw p1.reason;
+    // Trending fetches 2 pages (AW5, round 10 debugger): the slice agent
+    // raised the shared path to 4 pages for search, but Trending has no
+    // load more and its render cap is the Show limit (default 100) — the
+    // 3rd/4th pages' items sit unreachable in the pool behind the cap, so
+    // they cost 2 requests and buy nothing. Search keeps all 4 (96).
+    const pageCount = opts.trending ? 2 : WALLHAVEN_PAGES;
+    const settled = await Promise.allSettled(
+      Array.from({ length: pageCount }, (_, i) => fetchPage(i + 1)));
+    if (settled[0].status === "rejected") throw settled[0].reason;
     const out = [];
-    const { data, via: v1 } = p1.value;
+    const { data, via: v1 } = settled[0].value;
     let via = v1;
-    const full1 = data.data && data.data.length >= 24;
-    out.push(...(data.data || []).map(toItem));
-    let full2 = false, p2Processed = false;
-    if (full1 && out.length < WALLHAVEN_TARGET && p2.status === "fulfilled") {
-      const { data: data2, via: v2 } = p2.value;
-      full2 = data2.data && data2.data.length >= 24;
-      out.push(...(data2.data || []).map(toItem));
-      via = v2;
-      p2Processed = true;
+    let nextCursor = null; // the next page not yet PROCESSED, or null when done
+    // Round 10: up to pageCount pages, processed in order. Stop at
+    // the first failed page (the cursor points at it, so load more retries
+    // it), the first short page (no more pages), or when the target is
+    // met. A page that succeeds is used even if a later one fails.
+    for (let i = 0; i < pageCount; i++) {
+      const page = i + 1;
+      const s = settled[i];
+      if (s.status === "rejected") { nextCursor = page; break; }
+      const { data: pd, via: pv } = s.value;
+      via = pv;
+      const items = pd.data || [];
+      out.push(...items.map(toItem));
+      if (items.length < 24) { nextCursor = null; break; } // short page: last
+      if (out.length >= WALLHAVEN_TARGET) { nextCursor = page + 1; break; }
+      nextCursor = page + 1;
     }
     const totalWith = typeof data.meta?.total === "number" ? data.meta.total : null;
     const totalWithout = hiddenPromise ? await hiddenPromise : null;
@@ -976,12 +1111,10 @@ const SOURCES = {
       out.hidden = 0;
       out.hiddenScope = "db";
     }
-    // Load-more cursor: the next page not yet PROCESSED. Page 2 was
-    // fetched alongside page 1 but is only processed when page 1 is full
-    // and the target isn't met — when it wasn't processed (page 2's fetch
-    // failed), the first load-more click re-fetches it instead of
-    // skipping to page 3. A short page 1 means there is no page 2 at all.
-    out.nextCursor = !full1 ? null : (!p2Processed ? 2 : (full2 ? 3 : null));
+    // Load-more cursor: the next page not yet PROCESSED (see the loop
+    // above — a failed page is retried, a short page ends the source,
+    // a met target leaves the next page for the first load-more click).
+    out.nextCursor = nextCursor;
     out.exhausted = out.nextCursor === null;
     out.via = via;
     return out;
@@ -1059,10 +1192,14 @@ function wallhavenParams(q, opts = {}) {
   return params;
 }
 
-// Wallhaven pagination: 24 results per page, two pages max (48) — enough
-// for the ratio/min-res filters to have something to work with, without
-// turning one search into a crawl.
-const WALLHAVEN_TARGET = 48;
+// Wallhaven pagination: 24 results per page, up to WALLHAVEN_PAGES pages
+// (target 96 — raised from 2 pages / 48 in round 10: Wallhaven was the
+// source the user singled out, 48 from 2 pages while the API has thousands
+// more, and the API is fast, so 4 concurrent page fetches cost one round
+// trip). Enough for the ratio/min-res filters to have something to work
+// with, without turning one search into a crawl.
+const WALLHAVEN_TARGET = 96;
+const WALLHAVEN_PAGES = 4;
 
 // --- Sorting ---
 // The last fetched result set is kept in memory so changing the sort order
@@ -1102,6 +1239,20 @@ function loadMoreBtn() {
   if (!loadMoreBtnCache) loadMoreBtnCache = $("#load-more");
   return loadMoreBtnCache;
 }
+// The top load-more button (round 10) mirrors the bottom one exactly —
+// same hidden/disabled/text — so "load more at the top" is the same
+// action. Its row is reserved (see style.css), so showing it never moves
+// the grid.
+let loadMoreTopBtnCache = null;
+let loadMoreTopRowCache = null;
+function loadMoreTopBtn() {
+  if (!loadMoreTopBtnCache) loadMoreTopBtnCache = $("#load-more-top");
+  return loadMoreTopBtnCache;
+}
+function loadMoreTopRow() {
+  if (!loadMoreTopRowCache) loadMoreTopRowCache = $("#load-more-top-row");
+  return loadMoreTopRowCache;
+}
 // Button state, derived from the current view + cursors + render:
 // hidden unless a search rendered cards; disabled while a load is in
 // flight, or when nothing is left to show (every source exhausted AND
@@ -1111,14 +1262,17 @@ function loadMoreBtn() {
 function updateLoadMoreButton() {
   const btn = loadMoreBtn();
   if (!btn) return;
+  const topBtn = loadMoreTopBtn();
+  const topRow = loadMoreTopRow();
   // A search fetch is in flight: the grid shows skeletons, not cards.
   // search() hides the button directly, but a load-more click racing the
   // new search can resolve after the search started — its dropped-load
   // path would otherwise unhide the button over the skeletons (stale
   // lastReports counts). Hide until the new search renders.
-  if (searchLoading) { btn.hidden = true; return; }
+  if (searchLoading) { btn.hidden = true; if (topRow) topRow.hidden = true; return; }
   const show = !favsView && !trendingView && lastReports.length > 0 && lastVisibleCount > 0;
   btn.hidden = !show;
+  if (topRow) topRow.hidden = !show;
   if (!show) return;
   const hasMorePages = Object.keys(lastCursors).some((n) => typeof SOURCES[n]?.more === "function");
   const hasHidden = lastLimitHidden > 0;
@@ -1132,6 +1286,7 @@ function updateLoadMoreButton() {
     btn.disabled = false;
     btn.textContent = "Load more";
   }
+  if (topBtn) { topBtn.disabled = btn.disabled; topBtn.textContent = btn.textContent; }
 }
 
 // One Load more click: fetch the next page from every source that still
@@ -1179,6 +1334,7 @@ async function loadMore() {
   if (seq !== viewSeq) { updateLoadMoreButton(); return; }
   // Dedupe set for the merge below (built once, shared by all batches).
   const seenFull = new Set(lastResults.map((r) => r.full));
+  let addedFresh = false; // a new batch landed: the preload budget restarts for it (AW1)
   for (const b of batches) {
     if (!b.ok) continue; // failed source: pill and cursor stand, retry next click
     // Dedupe the batch against the fetched set (same by-full rule as
@@ -1186,6 +1342,7 @@ async function loadMore() {
     // (page boundaries shift as new posts arrive) must not count twice
     // in the pill or the pool.
     const fresh = b.passing.filter((r) => !seenFull.has(r.full));
+    if (fresh.length) addedFresh = true;
     for (const r of fresh) seenFull.add(r.full);
     lastResults.push(...fresh);
     // Advance the cursor (a null nextCursor means exhausted — drop the entry).
@@ -1206,6 +1363,14 @@ async function loadMore() {
       lastReports[idx] = sourceReport(b.name, { hidden: st.hidden, hiddenScope: st.hiddenScope, via: st.via, empty: st.empty }, { length: st.passing });
     }
   }
+  // A new batch landed: its preload budget starts here (AW1). Without
+  // this, a Paused pump (target already spent) would never resume on the
+  // new cards — they would sit hidden under the default loaded-only
+  // filter, and the observer can't fire on display:none cards, so Load
+  // more would appear to do nothing. The session counters are untouched
+  // (AN5); only the batch base moves, and only when the batch actually
+  // added cards — an all-dupe/failed click leaves the budget alone.
+  if (addedFresh) resetPreloadBatch();
   extraLimit += LOAD_MORE_STEP;
   renderResults(lastResults, lastReports, lastQuery);
   updateLoadMoreButton();
@@ -1520,6 +1685,10 @@ function failReasonText(reason) {
     : "Blocked or missing";
 }
 function markImageFailed(img, reason) {
+  // A failed card is never "loaded" (round 10): drop it from the loaded
+  // record and strip the class, so the loaded-only grid never shows a
+  // placeholder and the filter counts stay honest.
+  markCardFailed(img);
   img.dataset.state = "failed";
   img.dataset.failReason = reason || "error";
   img.style.visibility = "hidden";
@@ -1549,12 +1718,62 @@ function markImageFailed(img, reason) {
     // (Re)build the content: a retry that fails again must show the new
     // reason, not the stale one from the first failure.
     ph.hidden = false;
-    ph.innerHTML = `<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 18l4.5-4.5 3.5 3.5 3-3L20 19"/><line x1="4" y1="4" x2="20" y2="20"/></svg><span>Image couldn't load</span><span class="img-fail-reason">${escapeHtml(failReasonText(reason))}</span>`;
+    ph.innerHTML = `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 18l4.5-4.5 3.5 3.5 3-3L20 19"/><line x1="4" y1="4" x2="20" y2="20"/></svg><span>Image couldn't load</span><span class="img-fail-reason">${escapeHtml(failReasonText(reason))}</span>`;
   }
   const card = img._card || img.closest(".card");
   const retry = img._retryBtn || (card && card.querySelector('[data-action="retry-img"]'));
   if (retry) img._retryBtn = retry;
   if (retry && !img.dataset.thumbOnly) retry.style.display = "";
+}
+
+// A full-res upgrade failed, but the thumbnail is displaying — the card is
+// NOT broken, it just never got its full image. Keep the thumbnail visible
+// (a failed upgrade must never hide a working image) and say so honestly:
+// a small "Preview only" badge on the card (with the reason in its title)
+// and the Retry button in the action row, so the user can try the full
+// again. The state stays "thumb", so a later Retry (or a re-render) can
+// upgrade it; the preload pump still hears "failed", so the card is not
+// counted as preloaded.
+function markFullFailed(img, reason) {
+  img.dataset.state = "thumb";
+  img.dataset.failReason = reason || "error";
+  img.style.visibility = ""; // never hide a displaying thumbnail
+  const card = img._card || img.closest(".card");
+  if (card) card.classList.add("full-failed");
+  const anchor = img._anchor || img.closest("a.thumb");
+  if (anchor) {
+    let b = img._fullFailedBadge || anchor.querySelector(".badge-full-failed");
+    if (!b) {
+      b = document.createElement("span");
+      b.className = "badge badge-full-failed";
+      anchor.appendChild(b);
+      img._fullFailedBadge = b;
+    }
+    b.hidden = false;
+    b.textContent = "Preview only";
+    b.title = `Full image failed: ${failReasonText(reason)} — showing preview. Retry to try again.`;
+  }
+  const retry = img._retryBtn || (card && card.querySelector('[data-action="retry-img"]'));
+  if (retry) img._retryBtn = retry;
+  if (retry && !img.dataset.thumbOnly) retry.style.display = "";
+}
+
+// The upgrade chain in loadFullImage exhausted: decide between the two
+// failure modes. If the thumbnail is actually displaying (loaded, decoded,
+// never errored), keep it — see markFullFailed. Otherwise there is no
+// image to keep, and the whole card fails as before (see markImageFailed).
+// The thumbnail check is `complete && naturalWidth > 0` (a loaded image)
+// plus `!_thumbErrored` (the authoritative flag — imgThumbError sets it
+// when the thumb itself errors, and a failed thumb has naturalWidth 0
+// anyway). A thumb that is still loading when the chain exhausts is NOT
+// kept: the chain's last candidate IS the thumb URL, so its probe failing
+// is strong evidence the thumb won't arrive either.
+function markUpgradeFailed(img, reason) {
+  if (!img._thumbErrored && img.complete && img.naturalWidth > 0) {
+    markFullFailed(img, reason);
+  } else {
+    markImageFailed(img, reason);
+  }
 }
 
 // A card image finished loading, so the browser knows its true size.
@@ -1608,6 +1827,11 @@ function imgLoaded(img) {
       && img.getAttribute("src") === img.dataset.full) {
     badge.textContent = `${w}×${h}`;
   }
+  // thumbOnly card (Wallpapers.com): the thumbnail IS the final image, so
+  // its arrival (this load) is what makes the card "loaded" (round 10).
+  // A normal card's thumb load is not its final image — only the full
+  // upgrade counts, and loadFullImage records that.
+  if (img.dataset.thumbOnly && img.dataset.state === "thumb") markCardLoaded(img);
 }
 
 // Full URLs whose probe already succeeded (in this page lifetime). A
@@ -1620,6 +1844,43 @@ function imgLoaded(img) {
 // one probe beats unbounded memory.
 const PROBED_URLS_CAP = 2000;
 const probedFullUrls = new Set();
+
+// Pages whose full image is loaded (round 10): the data-side record of
+// "this card is ready", keyed by source page URL (the same key the
+// favorites use). The card's .is-loaded class is the DOM mirror — the
+// CSS grid filter hides cards without it. Populated when an img reaches
+// its final image (loadFullImage success, or a thumbOnly thumb arriving
+// via imgLoaded) and cleared on a failed card and on a new search. The
+// full rebuild restores .is-loaded from this Set, so a rebuilt card
+// doesn't flash as unloaded while the observer re-verifies it (the
+// cached probe verdict would restore it a moment later anyway).
+// Capped like probedFullUrls: a long session would otherwise grow it
+// without bound. Evicting the oldest only loses the rebuild shortcut;
+// the card's own class (on the live node) is untouched.
+const loadedPages = new Set();
+function markCardLoaded(img) {
+  // The page key lives on the img (see cardHtml) so a rebuilt card can
+  // be matched without a DOM walk; fall back to the card's fav button.
+  const page = (img.dataset && img.dataset.page)
+    || (img._card && img._card.querySelector('[data-action="toggle-fav"]')?.dataset?.page)
+    || null;
+  if (page) {
+    if (loadedPages.size >= PROBED_URLS_CAP) loadedPages.delete(loadedPages.values().next().value);
+    loadedPages.add(page);
+  }
+  const card = img._card || img.closest(".card");
+  if (card) card.classList.add("is-loaded");
+  updateLoadedFilterButtons();
+}
+function markCardFailed(img) {
+  const page = (img.dataset && img.dataset.page)
+    || (img._card && img._card.querySelector('[data-action="toggle-fav"]')?.dataset?.page)
+    || null;
+  if (page) loadedPages.delete(page);
+  const card = img._card || img.closest(".card");
+  if (card) card.classList.remove("is-loaded");
+  updateLoadedFilterButtons();
+}
 
 // --- Preload ---
 // How much full-image data to fetch up front, in bytes, while the user
@@ -1664,6 +1925,27 @@ function preloadBytesToGb(bytes) {
 }
 let preloadSpent = 0; // bytes charged to eager preloads, this view (see below)
 let preloadCount = 0; // wallpapers eagerly preloaded, this view (see below)
+// Batch base (round 10 debugger, AW1): the session counters above are
+// cumulative, but the target is a PER-BATCH budget — each Load more click
+// starts a new batch with a fresh budget, or the pump could never resume
+// after Paused (spent already >= target) and the new batch's cards would
+// sit hidden under the default loaded-only filter forever: the pump won't
+// touch them, and the observer can't fire on display:none cards. The base
+// is the counters' value when the current batch started; the pump's stop
+// check and the meter both read the batch-relative numbers (spent - base).
+// Reset by resetPreloadBatch() when a new batch lands (loadMore, a fresh
+// Trending load) and by search()'s reset. Saved per view with the counters
+// (see preloadStateByView) so a round trip doesn't resurrect a stale base.
+let preloadBaseSpent = 0;
+let preloadBaseCount = 0;
+// A new batch landed (load more, fresh Trending load): the current batch's
+// budget starts here. The session counters are NOT touched (AN5) — only
+// the base moves, so the meter's batch numbers restart at 0 / target while
+// the session totals keep accumulating underneath.
+function resetPreloadBatch() {
+  preloadBaseSpent = preloadSpent;
+  preloadBaseCount = preloadCount;
+}
 // Preload progress is PER VIEW, not per page: the meter counts one view's
 // preloads, and switching views must not reset it (the v5.6 browser test:
 // the meter restarted at 0 after a Favorites/Trending round trip —
@@ -1674,7 +1956,7 @@ let preloadCount = 0; // wallpapers eagerly preloaded, this view (see below)
 // zeroes the search view's counters AND its stored entry, so stale
 // progress can never resurrect after a later round trip. Favorites never
 // preloads (the pump stops there), so its entry stays {0, 0}.
-const preloadStateByView = new Map(); // view key -> { spent, count }
+const preloadStateByView = new Map(); // view key -> { spent, count, baseSpent, baseCount }
 let preloadViewKey = "search"; // the view the counters currently belong to
 // Save the outgoing view's counters and restore the incoming view's.
 // Called from setFavsView/setTrendingView AFTER the flag flips, so the
@@ -1685,11 +1967,22 @@ let preloadViewKey = "search"; // the view the counters currently belong to
 function syncPreloadView() {
   const key = favsView ? "favs" : trendingView ? "trending" : "search";
   if (key === preloadViewKey) return;
-  preloadStateByView.set(preloadViewKey, { spent: preloadSpent, count: preloadCount });
+  preloadStateByView.set(preloadViewKey, { spent: preloadSpent, count: preloadCount, baseSpent: preloadBaseSpent, baseCount: preloadBaseCount });
   const s = preloadStateByView.get(key);
   preloadSpent = s ? s.spent : 0;
   preloadCount = s ? s.count : 0;
+  preloadBaseSpent = s ? (s.baseSpent || 0) : 0;
+  preloadBaseCount = s ? (s.baseCount || 0) : 0;
   preloadViewKey = key;
+  // The phase belongs to the view too (round 10): entering Favorites
+  // idles it (the pump never runs there — the meter hides), and entering
+  // Search/Trending restarts it as "loading" when a target is set (the
+  // pump corrects it to ready/paused on the new view's first render).
+  // Without this the meter shows the previous view's state until the
+  // next render — and, for an empty Favorites view, forever, since the
+  // empty branch returns before restartPreload.
+  preloadPhase = key === "favs" ? "idle" : (preloadTarget() > 0 ? "loading" : "idle");
+  updatePreloadMeter();
 }
 let preloadQueue = []; // card <img>s in display order, rebuilt per render
 let preloadIndex = 0; // next queue entry to consider (only advances past an
@@ -1756,22 +2049,53 @@ function updatePreloadMeter() {
   const el = preloadMeterElCache;
   if (!el) return;
   const target = preloadTarget();
-  // The meter is a live progress line only: it shows while a search is
-  // preloading toward a target the user set, and is hidden otherwise —
-  // Off, target reached, queue drained, Favorites view. (It used to
-  // persist a "Preloaded ≈ X" summary after the fact; that text is gone —
-  // the line exists to show loading in progress, not history.)
-  const show = preloadRunning && target > 0;
+  // The meter is persistent once a target is set (round 10): it used to
+  // show only while the pump was running and hide the moment the target
+  // was reached or the queue drained — which is why the user said the
+  // loading pill "is not there". Now it stays visible with its state
+  // (Preloading… / Paused / Ready) until the target is cleared or the
+  // view leaves Search/Trending. The reserve (round 6/8/9) keeps the grid
+  // from jumping when it appears — the slot is already reserved whenever
+  // the grid has cards. It never shows in Favorites: the pump doesn't
+  // run there, and the phase goes stale on the view switch (nothing calls
+  // the pump when entering Favorites), so the view gate — not the phase —
+  // hides it. Trending keeps it (the pump runs there by design).
+  const show = target > 0 && preloadPhase !== "idle" && !favsView;
   el.hidden = !show;
+  el.classList.toggle("is-loading", show && preloadPhase === "loading");
   if (!show) return;
   if (!preloadMeterTextCache) preloadMeterTextCache = el.querySelector(".preload-meter-text");
   if (!preloadMeterFillCache) preloadMeterFillCache = el.querySelector(".preload-meter-fill");
   const text = preloadMeterTextCache || el;
-  text.textContent = `Preloading… ${preloadCount} wallpaper${preloadCount === 1 ? "" : "s"} · ${fmtBytes(preloadSpent)} / ${fmtBytes(target)}`;
+  // Batch-relative numbers (AW1): the meter shows this batch's progress
+  // against the target, not the session totals — after a Load more the
+  // batch restarts at 0 / target, so the meter never reads over 100%.
+  const n = preloadCount - preloadBaseCount;
+  const spent = preloadSpent - preloadBaseSpent;
+  const plural = n === 1 ? "" : "s";
+  if (preloadPhase === "paused") {
+    text.textContent = `Paused — target reached · ${n} wallpaper${plural} · ${fmtBytes(spent)} / ${fmtBytes(target)}`;
+  } else if (preloadPhase === "ready") {
+    text.textContent = `Ready · ${n} wallpaper${plural} · ${fmtBytes(spent)} / ${fmtBytes(target)}`;
+  } else {
+    text.textContent = `Preloading… ${n} wallpaper${plural} · ${fmtBytes(spent)} / ${fmtBytes(target)}`;
+  }
   if (preloadMeterFillCache) {
-    preloadMeterFillCache.style.width = `${Math.min(100, (preloadSpent / target) * 100).toFixed(1)}%`;
+    preloadMeterFillCache.style.width = `${Math.min(100, (spent / target) * 100).toFixed(1)}%`;
   }
 }
+
+// Preload phase (round 10): what the pump is doing right now. Set by
+// pumpPreload's stop paths and by search()'s reset; read by
+// updatePreloadMeter. "idle" = no target (or Favorites) — meter hidden.
+// "loading" = the pump is running. "paused" = stopped because the next
+// item doesn't fit the remaining target (budget spent, unloaded cards
+// remain — raise the target or load more to resume). "ready" = stopped
+// because the queue is drained (everything in the current set attempted —
+// this is the user's "it is ready" state). "Ready" is a property of the
+// CURRENT SET only: loading more pages re-arms it (the new batch loads,
+// then the phase settles again).
+let preloadPhase = "idle";
 
 // One eager upgrade at a time, in display order, until the target is
 // reached. Sequential on purpose: it leaves two of the three probe slots
@@ -1786,20 +2110,29 @@ function updatePreloadMeter() {
 function pumpPreload() {
   if (preloadInFlight) return;
   const target = preloadTarget();
-  if (!target || favsView) { preloadRunning = false; updatePreloadMeter(); return; }
+  if (!target || favsView) { preloadRunning = false; preloadPhase = "idle"; updatePreloadMeter(); return; }
   let img = null;
   while (preloadIndex < preloadQueue.length) {
     img = preloadQueue[preloadIndex];
     if (!img.isConnected || img.dataset.upgradeStarted) { preloadIndex++; continue; }
     break;
   }
-  if (!img || preloadIndex >= preloadQueue.length) { preloadRunning = false; updatePreloadMeter(); return; }
+  // Queue drained: everything in the current set was attempted — the
+  // batch is READY (round 10), so the meter settles on "Ready · N / Y"
+  // instead of hiding. (The phase stays a property of the current set:
+  // a later render rebuilds the queue and pumpPreload re-arms it.)
+  if (!img || preloadIndex >= preloadQueue.length) { preloadRunning = false; preloadPhase = "ready"; updatePreloadMeter(); return; }
   const cost = Number(img.dataset.cost) || 0;
   // Doesn't fit the remaining target: stop here WITHOUT consuming the
-  // item, so raising the target later resumes with it.
-  if (preloadSpent + cost > target) { preloadRunning = false; updatePreloadMeter(); return; }
+  // item, so raising the target later resumes with it. The meter settles
+  // on "Paused — target reached" (round 10) instead of hiding. The check
+  // is batch-relative (AW1): the target is a per-batch budget, so a spent
+  // session total must not block a fresh batch — resetPreloadBatch() moves
+  // the base when a new batch lands (loadMore, fresh Trending load).
+  if ((preloadSpent - preloadBaseSpent) + cost > target) { preloadRunning = false; preloadPhase = "paused"; updatePreloadMeter(); return; }
   preloadIndex++;
   preloadRunning = true;
+  preloadPhase = "loading";
   preloadInFlight = true;
   updatePreloadMeter();
   loadFullImage(img, (status) => {
@@ -1824,6 +2157,64 @@ function restartPreload(imgs) {
   preloadIndex = 0;
   updatePreloadMeter();
   pumpPreload();
+}
+
+// Grid filter (round 10): which cards the search grid shows while a
+// preload target is set. "loaded" = only cards whose full image is ready
+// — the main grid never shows an unloaded placeholder (the user's "none
+// nonloaded"). "pending" = only cards not yet loaded, one click away for
+// the stragglers (and their Retry buttons). "all" = everything, the old
+// behaviour. The filter is a CSS class on #results (see style.css): cards
+// keep their nodes, the pump keeps working on the hidden ones, and a card
+// flips visible the moment its .is-loaded class lands, with no re-render.
+// It only applies in the search view with a target set; Favorites and
+// Trending always show all. The default is "loaded" — a new search resets
+// to it (see search()).
+let gridFilter = "loaded";
+function gridFilterActive() {
+  return !favsView && !trendingView && preloadTarget() > 0;
+}
+function loadedCardCounts() {
+  const box = resultsBox();
+  if (!box) return { total: 0, loaded: 0, pending: 0 };
+  const cards = box.querySelectorAll(".card");
+  let loaded = 0;
+  for (const card of cards) if (card.classList.contains("is-loaded")) loaded++;
+  return { total: cards.length, loaded, pending: cards.length - loaded };
+}
+function updateLoadedFilterButtons() {
+  const row = staticEl("loaded-filter");
+  if (!row) return;
+  const { total, loaded, pending } = loadedCardCounts();
+  // The row only exists in the search view with a target set AND with
+  // cards to filter (AW3): over an empty state (0 results, idle, ratio
+  // hidden) it would show three (0) buttons — and, worse, the empty branch
+  // in renderResults returns before applyGridFilter, so without this gate
+  // the row keeps the PREVIOUS search's counts above "No wallpapers found".
+  row.hidden = !gridFilterActive() || total === 0;
+  if (row.hidden) return;
+  const setBtn = (id, label, on) => {
+    const b = staticEl(id);
+    if (!b) return;
+    b.textContent = label;
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.classList.toggle("active", on);
+  };
+  setBtn("filter-loaded", `✓ Loaded (${loaded})`, gridFilter === "loaded");
+  setBtn("filter-pending", `Not ready (${pending})`, gridFilter === "pending");
+  setBtn("filter-all", `All (${total})`, gridFilter === "all");
+}
+function applyGridFilter() {
+  const box = resultsBox();
+  if (!box) return;
+  const on = gridFilterActive();
+  box.classList.toggle("show-loaded", on && gridFilter === "loaded");
+  box.classList.toggle("show-pending", on && gridFilter === "pending");
+  updateLoadedFilterButtons();
+}
+function setGridFilter(mode) {
+  gridFilter = mode;
+  applyGridFilter();
 }
 
 // Upgrade one card's visible image to full resolution (or the next working
@@ -1861,6 +2252,7 @@ function loadFullImage(img, onDone) {
   // single-candidate card was a no-op that instantly reported success.
   if (!img._thumbErrored && img.getAttribute("src") === candidates[0]) {
     img.dataset.state = "full";
+    markCardLoaded(img);
     done("cached");
     return;
   }
@@ -1873,6 +2265,7 @@ function loadFullImage(img, onDone) {
     img.style.visibility = "";
     restoreImgAlt(img);
     img.dataset.state = "full";
+    markCardLoaded(img);
     done("cached");
     return;
   }
@@ -1894,7 +2287,7 @@ function loadFullImage(img, onDone) {
     // (dead), but if the img was detached some other way the pump's onDone
     // must still fire exactly once or the pump stalls forever.
     if (dead || !img.isConnected) { done("failed"); return; }
-    if (i >= candidates.length) { markImageFailed(img, lastFailReason); done("failed"); return; }
+    if (i >= candidates.length) { markUpgradeFailed(img, lastFailReason); done("failed"); return; }
     const url = candidates[i++];
     cancelProbe = probeUrl(url, (ok, reason) => {
       cancelProbe = null;
@@ -1910,6 +2303,7 @@ function loadFullImage(img, onDone) {
         img.style.visibility = "";
         restoreImgAlt(img);
         img.dataset.state = "full";
+        markCardLoaded(img);
         done("downloaded");
       } else {
         lastFailReason = reason || "error";
@@ -2074,6 +2468,7 @@ function setFavsView(on) {
   // previous view's final pills directly, with no busy phase.
   if (on) setStatusReserve(0);
   syncPreloadView();
+  applyGridFilter(); // the filter only applies in the search view (round 10)
 }
 
 function renderFavsView() {
@@ -2201,7 +2596,7 @@ function cardHtml(r, fav) {
         <div class="tags">${shownTags.map((t) => `<button type="button" class="tag-chip" data-action="search-tag" data-tag="${escapeHtml(t)}" title="Search for ${escapeHtml(t)}">${escapeHtml(t)}</button>`).join("")}${extraTags > 0 ? `<span class="tag-more" title="${extraTags} more tag${extraTags === 1 ? "" : "s"}">+${extraTags}</span>` : ""}</div>` : "";
   return `
     <article class="card">
-      <a class="thumb" href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${escapeHtml(thumbSrc)}" data-full="${escapeHtml(displayUrl)}" data-alts="${escapeHtml(alts.join("|"))}"${r.thumbOnly ? ' data-thumb-only="1"' : ""} data-cost="${cost}" data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
+      <a class="thumb" href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${escapeHtml(thumbSrc)}" data-full="${escapeHtml(displayUrl)}" data-alts="${escapeHtml(alts.join("|"))}"${r.thumbOnly ? ' data-thumb-only="1"' : ""} data-cost="${cost}" data-page="${escapeHtml(r.page)}" data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
         <span class="badge badge-res">${res}</span>
         <span class="badge badge-src">${r.source}</span>
       </a>
@@ -2232,6 +2627,12 @@ function buildCard(r, fav) {
   img._card = card;
   const sib = img.nextElementSibling;
   img._badge = (sib && typeof sib.className === "string" && sib.className.includes("badge-res")) ? sib : null;
+  // A rebuilt card whose full image already loaded (recorded in
+  // loadedPages) shows as loaded immediately (round 10) — same as the
+  // full rebuild's restoration below. Without this, a card that left the
+  // visible set and re-entered via the growing path would hide in the
+  // loaded-only view until the observer re-verified it.
+  if (loadedPages.has(r.page)) card.classList.add("is-loaded");
   return { card, img };
 }
 
@@ -2305,6 +2706,15 @@ function renderResults(results, reports, q) {
     // upgrade on a discarded card would never report back (see
     // discardRenderedCards) — the preload pump would stall forever.
     discardRenderedCards();
+    // Nothing to show — the pump has nothing to do, so the meter goes idle
+    // (round 10); without this a target-set search that finds nothing leaves
+    // the meter stuck on "Preloading… 0 / Y" (the empty branch returns
+    // before restartPreload, so the pump never corrects the phase).
+    preloadPhase = "idle";
+    updatePreloadMeter();
+    // The filter row is refreshed after each empty state below (AW3) —
+    // not here: the old cards are still in the DOM until innerHTML is
+    // set, so the gate in updateLoadedFilterButtons would still see them.
     if (favsView && !uniq.length) {
       box.innerHTML = `
       <div class="empty-state">
@@ -2312,6 +2722,7 @@ function renderResults(results, reports, q) {
         <h2>No favorites yet</h2>
         <p>Tap the ♡ on any wallpaper to save it here.</p>
       </div>`;
+      applyGridFilter(); // AW3: no cards — the filter row hides (gate in updateLoadedFilterButtons)
       return;
     }
     // Results exist but the ratio filter hid all of them — say so and
@@ -2327,6 +2738,7 @@ function renderResults(results, reports, q) {
         <p><strong>${uniq.length}</strong> matching wallpaper${uniq.length === 1 ? "" : "s"} in other ratios.</p>
         <button type="button" class="btn-ghost" data-action="clear-ratio">Show all ratios</button>
       </div>`;
+      applyGridFilter(); // AW3: no cards — the filter row hides
       return;
     }
     const m = minRes(); // read once: the condition below used to call it twice
@@ -2340,6 +2752,7 @@ function renderResults(results, reports, q) {
         <p><strong>${hiddenTotal.toLocaleString()}</strong> matching post${hiddenTotal === 1 ? "" : "s"} below that size.</p>
         <button type="button" class="btn-ghost" data-action="clear-res">Show all resolutions</button>
       </div>`;
+      applyGridFilter(); // AW3: no cards — the filter row hides
       return;
     }
     box.innerHTML = `
@@ -2356,6 +2769,7 @@ function renderResults(results, reports, q) {
         </ul>
         <button type="button" class="btn-ghost" data-action="clear-res">Show all resolutions</button>
       </div>`;
+    applyGridFilter(); // AW3: no cards — the filter row hides
     return;
   }
   // Sort-only fast path: same visible set, same proxy state, same view —
@@ -2404,6 +2818,16 @@ function renderResults(results, reports, q) {
     const favPages = new Set(favorites.map((f) => f.page));
     const observer = getImageObserver();
     const nextByPage = new Map();
+    // Stage the reordered set in a fragment and insert it once (round 10
+    // optimizer): appending each card straight into the live box was one
+    // insertion per card — up to ~100 per load-more — and every insertion
+    // re-evaluates the :has() reserve rules on <main> plus the masonry
+    // layout. The fragment keeps the same final order (moves are moves:
+    // an existing card is detached from the box into the fragment, then
+    // back in place) with a single live insertion. Observing a new card's
+    // img while it sits in the fragment is fine — observation follows the
+    // node, and the pump/observer run after the insert, below.
+    const frag = document.createDocumentFragment();
     for (const r of visible) {
       let el = cardByPage.get(r.page);
       if (!el) {
@@ -2415,11 +2839,13 @@ function renderResults(results, reports, q) {
         if (observer) observer.observe(built.img);
         else loadFullImage(built.img);
       }
-      box.appendChild(el);
+      frag.appendChild(el);
       nextByPage.set(r.page, el);
     }
+    box.appendChild(frag);
     cardByPage = nextByPage;
     restartPreload(); // same cards, new order — preload follows the new order
+    applyGridFilter(); // counts refresh after the set grew/shrank (round 10)
     return;
   }
   // Full rebuild: abort in-flight full-res probes for the cards about to
@@ -2468,10 +2894,16 @@ function renderResults(results, reports, q) {
     img._badge = (sib && typeof sib.className === "string" && sib.className.includes("badge-res")) ? sib : null;
   });
   cardByPage = new Map(visible.map((r, i) => [r.page, cards[i]]));
+  // Restore the loaded marker on rebuilt cards (round 10): a card whose
+  // full image already loaded (recorded in loadedPages) shows as loaded
+  // immediately, instead of waiting for the observer to re-verify it via
+  // the cached probe verdict.
+  visible.forEach((r, i) => { if (loadedPages.has(r.page)) cards[i].classList.add("is-loaded"); });
   lastRenderProxyUp = localProxyUp;
   lastRenderFavsView = favsView;
   lastRenderTrendingView = trendingView;
   restartPreload(imgs);
+  applyGridFilter(); // re-assert the grid filter + refresh the counts (round 10)
 }
 
 async function search(ev) {
@@ -2491,8 +2923,19 @@ async function search(ev) {
   // would resurrect the old numbers (see syncPreloadView).
   preloadSpent = 0;
   preloadCount = 0;
-  preloadStateByView.set(preloadViewKey, { spent: 0, count: 0 });
+  preloadBaseSpent = 0;
+  preloadBaseCount = 0;
+  preloadStateByView.set(preloadViewKey, { spent: 0, count: 0, baseSpent: 0, baseCount: 0 });
+  // New search session: the loaded record starts over too (round 10) —
+  // the new results are different cards, and the grid filter re-applies
+  // to them as they load. The phase restarts as "loading" when a target
+  // is set, so the meter reads "Preloading… 0 / Y" through the busy
+  // phase; the grid filter resets to "loaded", the workflow's main view.
+  loadedPages.clear();
+  preloadPhase = preloadTarget() > 0 ? "loading" : "idle";
+  gridFilter = "loaded";
   updatePreloadMeter();
+  updateLoadedFilterButtons();
   // New search session: the load-more state starts over too — the old
   // cursors belong to the old query, and the render cap goes back to the
   // Show limit. Reset here (not when the fetch finishes) so a load-more
@@ -2524,6 +2967,8 @@ async function search(ev) {
   // render's counts, which are still the previous search's here.)
   const lmBtn = loadMoreBtn();
   if (lmBtn) lmBtn.hidden = true;
+  const lmTopRow = loadMoreTopRow();
+  if (lmTopRow) lmTopRow.hidden = true;
 
   const reports = [];
   const all = [];
@@ -2596,6 +3041,14 @@ $("#search-form").addEventListener("submit", search);
 // (see test-shim.mjs), a bare page without it just skips the wiring.
 const loadMoreBtnEl = $("#load-more");
 if (loadMoreBtnEl) loadMoreBtnEl.addEventListener("click", loadMore);
+// Top load-more button (round 10): above the grid, same action as the
+// bottom one. Guarded the same way — a bare page without it skips it.
+const loadMoreTopBtnEl = $("#load-more-top");
+if (loadMoreTopBtnEl) loadMoreTopBtnEl.addEventListener("click", loadMore);
+// Loaded filter buttons (round 10): Loaded / Not ready / All — the
+// "insta view loaded wallpapers" switch. Each sets the grid filter; the
+// button's data-filter attribute is the mode (see setGridFilter).
+$$(".filter-btn").forEach((b) => b.addEventListener("click", () => setGridFilter(b.dataset.filter || "all")));
 $("#proxy").addEventListener("change", saveSettings);
 $("#worker-url").addEventListener("change", () => { saveSettings(); refreshProxyAndRerender(); });
 $("#purity").addEventListener("change", saveSettings);
@@ -2630,6 +3083,8 @@ if (preloadEl) {
     saveSettings();
     updatePreloadPresets();
     updatePreloadMeter();
+    applyGridFilter(); // the target changed — the filter row and the grid
+    // follow it (a target set turns the loaded-only view on, Off turns it off)
     pumpPreload(); // raising the target resumes a stopped chain; lowering
     // it stops the pump at its next check (already-spent bytes stay spent)
   };
@@ -2644,6 +3099,7 @@ $$(".preload-preset").forEach((b) => b.addEventListener("click", () => {
   saveSettings();
   updatePreloadPresets();
   updatePreloadMeter();
+  applyGridFilter(); // see onPreloadInput — the filter follows the target
   pumpPreload();
 }));
 // Color swatches: persist the choice (and the pressed state) immediately;
@@ -2824,6 +3280,7 @@ function setTrendingView(on) {
   if (on) setStatusReserve(0);
   else statusBox().classList.remove("status-reserved-trending");
   syncPreloadView();
+  applyGridFilter(); // the filter only applies in the search view (round 10)
 }
 
 function renderTrendingView() {
@@ -2901,6 +3358,10 @@ async function loadTrending(force) {
   // Only the newest load renders, and only while the Trending view is
   // still showing (same race as search() above).
   if (seq !== viewSeq || !trendingView || favsView) return;
+  // A fresh Trending batch landed: its preload budget starts here (AW1,
+  // same as loadMore) — without this, a Paused pump would never resume
+  // on the refreshed cards.
+  resetPreloadBatch();
   renderResults(all, reports, "Trending");
 }
 
@@ -2928,6 +3389,12 @@ resultsBox().addEventListener("click", (ev) => {
     img.dataset.state = "thumb";
     img.dataset.failReason = "";
     retryBtn.style.display = "none";
+    // Clear the "Preview only" state too (see markFullFailed): a card
+    // whose upgrade failed but whose thumbnail was kept shows the badge
+    // and the full-failed class — a retry that succeeds must remove both,
+    // and a retry that fails again re-adds them via markUpgradeFailed.
+    if (img._fullFailedBadge) img._fullFailedBadge.hidden = true;
+    if (card) card.classList.remove("full-failed");
     loadFullImage(img);
     return;
   }

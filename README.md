@@ -29,11 +29,11 @@ Then open `http://localhost:8090/`. Or just open `index.html` in a browser
 | Wallhaven | API via proxy chain, inline | Works — best source; see "Why some sources need a proxy" |
 | Safebooru | API via proxy chain, inline | Works |
 | AlphaCoders | HTML search page via proxy chain, inline | Works, no API key — the documented API (`api2.0/get.php`) is dead (nginx 404 on every variant) |
-| Wallpapers.com | HTML search page via proxy chain, inline | Works — up to 80 items per search (no resolution shown) |
+| Wallpapers.com | HTML search page via proxy chain, inline | Works — up to 80 items per search (badge shows the listing ratio, e.g. 16:9) |
 | WallpaperCave | HTML search page via proxy chain, inline | Works via local proxy (up to 50 items); via public proxies it flips between working and failing in bursts — see below |
 | Zerochan | HTML search page via proxy chain, inline | Works via local proxy (up to 80 items); via public proxies Zerochan's bot-block ("Crawlers are not permitted") 503s corsfix in bursts — see below |
+| Gelbooru | API via proxy chain, inline | Works with a free account API key + user ID (Settings); without one the pill says "needs API key" |
 | WallpaperAccess | Link only | Cloudflare 403s every fetch, direct and via proxy |
-| Gelbooru | Link only | Its API returns 401 anonymously — needs an account API key |
 | Google Images | Link only | No free search API |
 
 ## Why some sources need a proxy
@@ -232,8 +232,8 @@ clean; on touch devices, which have no hover, the row is always visible.
 — so on a wide monitor the masonry just adds more ~300px columns instead
 of leaving empty margins.
 
-Zerochan and WallpaperCave images go through a proxy when one is
-configured — the local proxy when it is running, else your Cloudflare
+Zerochan, WallpaperCave, and Danbooru images go through a proxy when one
+is configured — the local proxy when it is running, else your Cloudflare
 Worker when one is set and answering. Every other source's images load
 direct, so a search never queues ~200 images behind the proxy's
 6-connection limit (changed 2026-11-15: the proxy used to carry every
@@ -241,7 +241,9 @@ image). The proxy sends no Referer and a plain UA, which dodges
 Referer-based hotlink blocks. Verified 2026-11-15: Zerochan full images
 that stalled mid-download direct came through the proxy in ~2.4 s, and
 WallpaperCave images that failed in bursts direct (32/100 cards on the
-hosted site) come through it instead. The direct URL stays as a fallback
+hosted site) come through it instead. Danbooru joined the proxy list in
+v5.14 (its 3220×5400 card failed in-grid direct on a slow/VPN path while
+the full image opened fine on click). The direct URL stays as a fallback
 candidate, so a proxy failure for one image doesn't brick its card. The
 proxy does NOT change the egress IP, so it can't dodge an IP-based block.
 With no proxy configured, Zerochan full images stall direct again (the
@@ -324,7 +326,77 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.13 (round 9 — the pill shift, 2026-11-16 — unreleased)
+## Changes in v5.14 (round 10 — the four issues, 2026-11-16 — unreleased)
+
+- **Danbooru cards no longer fail outright**: a card whose preview is
+  showing but whose full-size upgrade times out now keeps the preview
+  and gets a small "Preview only" badge instead of the whole-card
+  "Image couldn't load" placeholder — the full image is still one click
+  away. Danbooru images (cdn.donmai.us) are now proxy-routed when a
+  proxy is up, with the direct URL as fallback, and the "huge file"
+  line dropped from 15 MB to 5 MB, so big files show their ~850px
+  sample in the grid instead of stalling. The fail reason no longer
+  clips at narrow card sizes. No retry on timeout and no longer timeout
+  — a retry would hold a probe slot and a browser connection for
+  another 15 s; the sample line and the proxy route are the fix for
+  slow huge files. The proxy route is unproven live (Danbooru 403s
+  from this VM).
+- **A fairer slice from every source**: the per-source page caps were
+  the real limiter. Wallhaven now fetches 4 pages (up to 96, was 2
+  pages / 48), Safebooru and Gelbooru keep paging until their 100
+  target is met, Zerochan pulls tag pages 2–4, AlphaCoders pages 1–4.
+  The "cyberpunk" pool goes from ~364 to ~451 at the cost of ~6 more
+  requests, with no real slowdown (the pages run in parallel).
+  Danbooru stays at 100 — already the biggest slice — and
+  WallpaperCave's 8 is real (the matched categories only hold 8).
+  Best's round-robin already guarantees a fair visible set; the fix
+  extends how long small sources stay in the mix on load more.
+- **"Also search on" cleaned up**: Wallhaven was listed there even
+  though it is a full inline source — it is removed, so the row is
+  only WallpaperAccess + Google Images. The audit found two stale
+  README rows too (Gelbooru still "Link only", Wallpapers.com still
+  "no resolution shown") and fixed them. Everything else checked was
+  clean.
+- **The preload workflow the user asked for**: the meter is now
+  persistent — it stays visible whenever a target is set, showing
+  Preloading… / Paused / Ready plus the wallpaper count and MB/GB,
+  with a spinner while active. When a target is set, the grid shows
+  only fully loaded wallpapers ("none nonloaded"); a Loaded / Not
+  ready / All row sits under the meter — the Loaded button is the
+  instant view of the loaded set, Not ready is one click away, All is
+  the escape hatch. Sort and filter controls work on the loaded set.
+  Load more got a twin at the top of the results, doing the same as
+  the bottom one, and preloading continues on the new batch after
+  Load more. "Ready" means the queue drained for the current set;
+  "Paused" means the budget is spent with unloaded cards remaining.
+  One honest caveat: the spinner adds ~22px of meter width, which at
+  phone width could tip the meter text to a third line in the worst
+  case — the phone rung reserves two.
+- **Debugger pass (5 fixes)**: the big one was Load more doing nothing
+  after Paused — the pump compared the *session* total against the
+  target, so the new batch's cards stayed hidden under the loaded-only
+  filter and the observer can't fire on hidden cards; the target is now
+  a per-batch budget that resets when a fresh batch lands. Also: the
+  meter reserve under-reserved at 481–640px (the Paused text is 14
+  chars longer than the loading text, so the meter grew a line the
+  moment the target was reached — the two-line rung now runs to
+  640px); the filter row showed stale counts over empty states (it now
+  hides when there are no cards); the top load-more reserve was dead
+  space in Trending (excluded there); Trending fetched 4 Wallhaven
+  pages for a view with no load more (2 pages there, 4 in search).
+- **Optimizer pass (2 taken)**: Safebooru/Gelbooru re-fetched their
+  pid-1 page on the first load more (it was discarded when pid 0 met
+  the target) — it is now stashed and served from memory. The
+  growing-path render stages cards in a DocumentFragment and inserts
+  once (364 live insertions → 1). Verified clean with numbers:
+  parallel pages still ~150ms, growing render still beats rebuild,
+  Gelbooru no-key = 0 fetches, the meter costs 0 document queries
+  during a pump.
+- QA harness 481 checks (419 + 5 link cleanup + 12 Danbooru +
+  10 source slice + 19 preload workflow + 11 debugger + 5 optimizer),
+  optimizer all green.
+
+## Changes in v5.13 (round 9 — the pill shift, 2026-11-16 — pushed as cd31dc1c)
 
 - **The pill shift is fixed, for real this time**: the v5.12 browser test
   showed the grid still jumping +27/+10/+52px, and the round-9 bug hunt
