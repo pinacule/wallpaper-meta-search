@@ -31,10 +31,11 @@ async function fetchHtml(url) {
 // — all scraped hrefs start with a slash. Plain concatenation gives exactly
 // what new URL(rel, base) returns for those, without the parser (~0.30 ms
 // per search saved across ~240 calls, measured in node). Anything else
-// (absolute URL, or a rel with characters the parser would percent-encode)
-// falls back to URL parsing, so behaviour is identical.
+// (absolute URL, or a rel with characters the parser would percent-encode
+// — non-ASCII, braces, backtick, pipe, caret, backslash, space, angle
+// brackets, quotes) falls back to URL parsing, so behaviour is identical.
 const absUrl = (base, rel) =>
-  (rel.startsWith("/") && !/[\s<>"]/.test(rel) ? base + rel : new URL(rel, base).href);
+  (rel.startsWith("/") && /^[\x21-\x7E]+$/.test(rel) && !/[<>"`{}|^\\]/.test(rel) ? base + rel : new URL(rel, base).href);
 const cap80 = (arr) => arr.slice(0, 80);
 
 function dedupe(items) {

@@ -1,32 +1,34 @@
-/* Wallpaper Meta-Search — dark theme, no external assets, system fonts only.
-   Visual direction: a quiet tool, not a template. Flat surfaces, one
-   restrained accent (indigo, used sparingly), hairline borders instead of
-   glows and gradients, a real type scale, and square-ish 8px radii instead
-   of pills everywhere. No decorative gradients: the only ones left are
-   the card hover scrim (text legibility over images) and the skeleton
-   shimmer (loading animation). */
+/* Wallpaper Meta-Search — Wallhaven-inspired redesign (round 2, v5.6).
+   Visual direction: Wallhaven's language, not its identity. Warm-neutral
+   charcoal instead of blue-black; one restrained gold accent used
+   sparingly; small dense type (13-15px); hairline borders; near-square
+   corners (4px cards, 3px controls); a tight grid with small gaps; the
+   options are a flat toolbar, not a settings form; tabs are underlines,
+   not boxes; cards carry no chrome beyond a hairline border — the image
+   IS the card, like Wallhaven's tiles. No decorative gradients anywhere:
+   the card overlay is a solid bar and skeletons pulse flat. Flat colors
+   only, system fonts only, no external assets. */
 :root {
   color-scheme: dark;
-  --bg: #0a0b0e;
-  --bg-soft: #101218;
-  --panel: #12141b;
-  --panel-2: #171a22;
-  --border: #20242e;
-  --border-strong: #2f3542;
-  --text: #e8eaf0;
-  --muted: #9aa1b3;
-  --faint: #878ea1;
-  --accent: #7d8cff;
-  --accent-ink: #aab4ff;
-  --accent-soft: rgba(125, 140, 255, .12);
-  --ok: #3fb97f;
-  --ok-ink: #8fd8ae;
-  --fail: #f26d5f;
+  --bg: #1c1c1c;
+  --bg-soft: #262626;
+  --panel: #232323;
+  --panel-2: #2a2a2a;
+  --border: #2e2e2e;
+  --border-strong: #3d3d3d;
+  --text: #e9e9e9;
+  --muted: #a3a3a3;
+  --faint: #969696;
+  --accent: #e5b545;
+  --accent-ink: #e8c15a;
+  --accent-soft: rgba(229, 181, 69, .12);
+  --ok: #4caf7d;
+  --ok-ink: #7fd6a4;
+  --fail: #e06c5f;
   --fail-ink: #ff9a8a;
-  --link: #9db8ff;
-  --radius: 12px;
-  --radius-sm: 8px;
-  --shadow: 0 8px 24px rgba(0, 0, 0, .35);
+  --link: #e0b84f;
+  --radius: 4px;
+  --radius-sm: 3px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
@@ -36,7 +38,7 @@ html { -webkit-text-size-adjust: 100%; }
 
 body {
   margin: 0;
-  font: 16px/1.55 var(--font);
+  font: 15px/1.5 var(--font);
   color: var(--text);
   background: var(--bg);
   min-height: 100vh;
@@ -50,62 +52,63 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 
 /* Fluid full-width page: no max-width cap — the container stretches to the
    viewport with side padding that grows a little on wide screens (capped at
-   48px so ultrawide doesn't glue content to the edges). The masonry below
+   40px so ultrawide doesn't glue content to the edges). The masonry below
    keeps its columns ~300px wide and just adds more of them as the viewport
    grows, so nothing ever gets absurdly wide or tiny. */
 .page {
   margin: 0 auto;
-  padding: 20px clamp(16px, 2.5vw, 48px) 48px;
+  padding: 16px clamp(14px, 2vw, 40px) 40px;
 }
 
-/* ---------- Top bar ---------- */
+/* ---------- Top bar ----------
+   Wallhaven's header is a plain lowercase wordmark on the page
+   background — no icon tile, no panel, no button. The tagline is a
+   quiet second line; the top-note sits right, muted. */
 .topbar {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   gap: 16px;
-  padding: 6px 0 20px;
+  padding: 4px 0 14px;
 }
-.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.brand-mark {
-  flex: 0 0 auto;
-  width: 42px; height: 42px;
-  display: grid; place-items: center;
-  color: #0b0d12;
-  background: var(--accent);
-  border-radius: 10px;
-}
+.brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .brand-text h1 {
   margin: 0;
-  font-size: 1.35rem;
-  font-weight: 650;
+  font-size: 1.15rem;
+  font-weight: 700;
   letter-spacing: -.02em;
-  line-height: 1.2;
+  line-height: 1.25;
+  text-transform: lowercase;
 }
-.tagline { margin: 2px 0 0; color: var(--muted); font-size: .9rem; }
+.brand-text h1::after {
+  content: ".";
+  color: var(--accent);
+}
+.tagline { margin: 0; color: var(--muted); font-size: .85rem; white-space: nowrap; }
 .top-note {
   margin: 0;
   color: var(--faint);
-  font-size: .82rem;
+  font-size: .78rem;
   white-space: nowrap;
 }
-@media (max-width: 640px) { .top-note { display: none; } }
+@media (max-width: 640px) { .top-note, .tagline { display: none; } }
 
 /* ---------- Hero / search ----------
-   The hero is not a card: the search field sits on the page background and
-   carries the visual weight itself. No panel, no gradient, no glow. */
+   The search field is the hero, Wallhaven-style: one wide dark bar with
+   the input carrying the weight and a flat gold button. No panel, no
+   gradient, no glow. */
 .hero {
-  padding: 10px 0 0;
+  padding: 6px 0 0;
 }
 #search-form { margin: 0; }
 .search-box {
   display: flex;
   align-items: center;
   gap: 10px;
-  background: var(--panel);
+  background: var(--bg-soft);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  padding: 5px 5px 5px 14px;
+  padding: 4px 4px 4px 12px;
   transition: border-color .15s ease, box-shadow .15s ease;
 }
 .search-box:focus-within {
@@ -120,8 +123,8 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 1.05rem;
-  padding: 11px 0;
+  font-size: 1rem;
+  padding: 10px 0;
   outline: none;
 }
 #query::placeholder { color: var(--faint); }
@@ -130,52 +133,52 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   flex: 0 0 auto;
   border: 0;
   border-radius: var(--radius-sm);
-  padding: 12px 22px;
+  padding: 10px 18px;
   font: inherit;
-  font-weight: 650;
-  font-size: .95rem;
-  color: #0b0d12;
+  font-weight: 700;
+  font-size: .9rem;
+  color: #1c1c1c;
   background: var(--accent);
   cursor: pointer;
   transition: background .12s ease, transform .12s ease;
 }
-.search-box button[type="submit"]:hover { background: #8b97ff; }
+.search-box button[type="submit"]:hover { background: #f0c55a; }
 .search-box button[type="submit"]:active { transform: translateY(1px); }
-.hero-sub { margin: 12px 2px 0; color: var(--muted); font-size: .9rem; max-width: 70ch; }
+.hero-sub { margin: 10px 2px 0; color: var(--muted); font-size: .85rem; max-width: 70ch; }
 @media (max-width: 560px) {
-  .search-box { flex-wrap: wrap; padding: 10px; }
+  .search-box { flex-wrap: wrap; padding: 8px; }
   .search-box button[type="submit"] { width: 100%; }
 }
 
-/* ---------- Options panel: labelled control groups ----------
-   One panel, one row per group: Sources / Filters / View, each with a
-   fixed-width label column so the controls line up. A new control slots
-   into the matching #group-* container in index.html (see the comment
-   there); the panel itself needs no changes when one is added. */
+/* ---------- Options: a flat toolbar, not a panel ----------
+   Wallhaven's filter area is dense rows on the page background, not a
+   settings form. The groups are plain rows separated by hairlines, with
+   a narrow small-caps label column. A new control slots into the
+   matching #group-* container in index.html (see the comment there);
+   the toolbar itself needs no changes when one is added. */
 .options {
-  margin: 18px 0 0;
-  padding: 2px 16px 4px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  margin: 14px 0 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
 }
 .control-group {
   display: flex;
   align-items: flex-start;
-  gap: 16px;
-  padding: 12px 0;
+  gap: 14px;
+  padding: 9px 0;
 }
 .control-group + .control-group { border-top: 1px solid var(--border); }
 .control-group > .group-label {
-  flex: 0 0 92px;
+  flex: 0 0 76px;
   margin-right: 0;
-  padding-top: 9px; /* line the label up with the first row of controls */
+  padding-top: 7px; /* line the label up with the first row of controls */
 }
 .group-controls {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 20px;
+  gap: 8px 16px;
   min-width: 0;
   flex: 1;
 }
@@ -185,7 +188,7 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .group-controls.chip-group { gap: 8px; }
 @media (max-width: 640px) {
   /* Narrow screens: label above its controls instead of beside them. */
-  .control-group { flex-direction: column; gap: 8px; padding: 12px 0; }
+  .control-group { flex-direction: column; gap: 6px; padding: 9px 0; }
   .control-group > .group-label { flex: none; padding-top: 0; }
 }
 .chip-group {
@@ -197,29 +200,29 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 }
 .group-label {
   color: var(--faint);
-  font-size: .78rem;
-  font-weight: 650;
+  font-size: .72rem;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: .09em;
+  letter-spacing: .08em;
   margin-right: 4px;
 }
 .chip {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 12px;
+  gap: 7px;
+  padding: 5px 10px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--muted);
-  font-size: .9rem;
+  font-size: .85rem;
   font-weight: 600;
   cursor: pointer;
   user-select: none;
   transition: border-color .15s ease, background .15s ease, color .15s ease;
 }
-.chip:hover { border-color: #3d4456; color: var(--text); }
+.chip:hover { border-color: #4a4a4a; color: var(--text); }
 .chip input {
   position: absolute;
   opacity: 0;
@@ -235,7 +238,7 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .chip:has(input:checked) {
   background: var(--accent-soft);
   border-color: var(--accent);
-  color: #dfe4ff;
+  color: #f0d48a;
 }
 .chip:has(input:checked) .chip-dot { background: var(--accent); }
 .chip:has(input:focus-visible) {
@@ -245,33 +248,35 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .field {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   color: var(--muted);
-  font-size: .9rem;
+  font-size: .88rem;
   font-weight: 600;
 }
 select {
   appearance: none;
   -webkit-appearance: none;
   font: inherit;
-  font-size: .9rem;
+  font-size: .88rem;
   font-weight: 600;
   color: var(--text);
   background-color: var(--bg-soft);
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239aa1b5' stroke-width='3' stroke-linecap='round'><path d='M6 9l6 6 6-6'/></svg>");
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a3a3a3' stroke-width='3' stroke-linecap='round'><path d='M6 9l6 6 6-6'/></svg>");
   background-repeat: no-repeat;
-  background-position: right 10px center;
+  background-position: right 9px center;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  padding: 8px 30px 8px 12px;
+  padding: 6px 26px 6px 10px;
   cursor: pointer;
 }
-select:hover { border-color: #3d4456; }
+select:hover { border-color: #4a4a4a; }
 
-/* ---------- Settings (details) ---------- */
+/* ---------- Settings (details) ----------
+   A flat bordered box, no fill — the summary row reads like the
+   toolbar rows above it. */
 .settings {
-  margin: 14px 0 0;
-  background: var(--panel);
+  margin: 12px 0 0;
+  background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
@@ -281,9 +286,9 @@ select:hover { border-color: #3d4456; }
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 13px 16px;
+  padding: 11px 14px;
   color: var(--muted);
-  font-size: .92rem;
+  font-size: .88rem;
   font-weight: 650;
   cursor: pointer;
   list-style: none;
@@ -292,7 +297,7 @@ select:hover { border-color: #3d4456; }
 .settings summary::-webkit-details-marker { display: none; }
 .settings summary:hover { color: var(--text); }
 .settings .chev {
-  width: 10px; height: 10px;
+  width: 9px; height: 9px;
   flex: 0 0 auto;
   border-right: 2px solid currentColor;
   border-bottom: 2px solid currentColor;
@@ -300,14 +305,14 @@ select:hover { border-color: #3d4456; }
   transition: transform .18s ease;
 }
 .settings[open ] .chev { transform: rotate(225deg) translateY(-2px); }
-.settings-body { padding: 0 16px 16px; border-top: 1px solid var(--border); }
-.settings-body > p:first-child { margin-top: 14px; }
-.settings-body p { color: var(--muted); font-size: .92rem; }
+.settings-body { padding: 0 14px 14px; border-top: 1px solid var(--border); }
+.settings-body > p:first-child { margin-top: 12px; }
+.settings-body p { color: var(--muted); font-size: .88rem; }
 .settings-field {
   display: block;
   margin: 12px 0;
   color: var(--text);
-  font-size: .92rem;
+  font-size: .88rem;
   font-weight: 600;
 }
 .settings-field input {
@@ -317,50 +322,50 @@ select:hover { border-color: #3d4456; }
      a 3-metre text field on an ultrawide monitor now that .page is fluid. */
   max-width: 720px;
   margin-top: 6px;
-  padding: 10px 12px;
+  padding: 9px 11px;
   font: inherit;
-  font-size: .92rem;
+  font-size: .88rem;
   color: var(--text);
   background: var(--bg-soft);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
 }
 .settings-field input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
-.hint { color: var(--faint); font-size: .85rem; }
+.hint { color: var(--faint); font-size: .82rem; }
 code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: .86em;
   background: var(--bg-soft);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 3px;
   padding: 1px 5px;
 }
 
 /* ---------- Also search on ---------- */
-.site-links { margin-top: 26px; }
+.site-links { margin-top: 22px; }
 .site-links-head h2 {
   margin: 0;
-  font-size: 1rem;
-  font-weight: 650;
+  font-size: .95rem;
+  font-weight: 700;
   letter-spacing: -.01em;
 }
-.site-links-head p { margin: 3px 0 0; color: var(--muted); font-size: .9rem; }
+.site-links-head p { margin: 3px 0 0; color: var(--muted); font-size: .85rem; }
 #site-buttons {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 12px;
+  margin-top: 10px;
 }
 #site-buttons a {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 8px 14px;
+  padding: 6px 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--panel);
   color: var(--text);
-  font-size: .9rem;
+  font-size: .88rem;
   font-weight: 600;
   text-decoration: none;
   transition: border-color .15s ease, background .15s ease;
@@ -380,16 +385,16 @@ code {
   align-items: center;
   gap: 8px;
   min-height: 0;
-  margin: 20px 0 0;
+  margin: 18px 0 0;
 }
 .status-row:empty { display: none; }
 .status-pill {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 5px 10px;
+  padding: 4px 9px;
   border-radius: var(--radius-sm);
-  font-size: .84rem;
+  font-size: .8rem;
   font-weight: 600;
   border: 1px solid var(--border);
   color: var(--muted);
@@ -403,14 +408,14 @@ code {
   border-radius: 50%;
   background: currentColor;
 }
-.pill-ok { color: var(--ok-ink); border-color: rgba(63, 185, 127, .35); }
-.pill-fail { color: var(--fail-ink); border-color: rgba(242, 109, 95, .35); }
+.pill-ok { color: var(--ok-ink); border-color: rgba(76, 175, 125, .35); }
+.pill-fail { color: var(--fail-ink); border-color: rgba(224, 108, 95, .35); }
 .pill-total { background: var(--panel-2); color: var(--text); border-color: var(--border-strong); }
-.pill-busy { color: var(--accent-ink); border-color: rgba(125, 140, 255, .35); }
+.pill-busy { color: var(--accent-ink); border-color: rgba(229, 181, 69, .35); }
 .spinner {
   width: 12px; height: 12px;
   flex: 0 0 auto;
-  border: 2px solid rgba(170, 180, 255, .3);
+  border: 2px solid rgba(232, 193, 90, .3);
   border-top-color: var(--accent-ink);
   border-radius: 50%;
   animation: spin .7s linear infinite;
@@ -422,26 +427,27 @@ code {
    (no fixed aspect-ratio, no object-fit cropping anywhere on results).
    Cards never split across columns (break-inside: avoid).
    Column width is ~300px and the count grows with the viewport (the page
-   is fluid, see .page), so ultrawide gets more columns, not wider ones. */
+   is fluid, see .page), so ultrawide gets more columns, not wider ones.
+   Wallhaven-tight: 10px gaps, hairline borders, no shadows, no zoom —
+   the image is the card. */
 .results {
   columns: 300px;
-  column-gap: 20px;
-  margin-top: 16px;
+  column-gap: 10px;
+  margin-top: 14px;
 }
 .results:empty { display: none; }
 .card {
   position: relative;
   break-inside: avoid;
-  margin-bottom: 20px;
+  margin-bottom: 10px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
-  transition: border-color .15s ease, box-shadow .15s ease;
+  transition: border-color .15s ease;
 }
 .card:hover {
-  border-color: #39404f;
-  box-shadow: var(--shadow);
+  border-color: #4a4a4a;
 }
 .card .thumb {
   position: relative;
@@ -460,9 +466,7 @@ code {
      and a thumb whose ratio differs from the reserved one letterboxes on
      black instead of shifting the card. */
   object-fit: contain;
-  transition: transform .25s ease;
 }
-.card:hover .thumb img { transform: scale(1.03); }
 /* Shown when every URL for a card failed (see markImageFailed in app.js):
    same reserved box, no removal, no jump — the card's links keep working.
    pointer-events:none so a click still opens the anchor's full-image
@@ -476,7 +480,7 @@ code {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  background: #12141b;
+  background: #232323;
   color: var(--muted);
   font-size: .85rem;
   line-height: 1.4;
@@ -487,41 +491,41 @@ code {
 .img-placeholder svg { opacity: .6; }
 .badge {
   position: absolute;
-  top: 10px;
+  top: 8px;
   z-index: 2;
-  padding: 3px 8px;
-  border-radius: 6px;
-  font-size: .74rem;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: .7rem;
   font-weight: 700;
   letter-spacing: .02em;
   line-height: 1.3;
-  color: #e8eaf0;
-  background: rgba(8, 9, 12, .85);
-  border: 1px solid rgba(255, 255, 255, .09);
+  color: #e9e9e9;
+  background: rgba(0, 0, 0, .78);
   /* Badges must never collide: each is capped at just under half the card
      and truncates with an ellipsis. At a 300px column "Wallpapers.com"
      (~120px) and "size unknown" (~106px) both fit; at a 240px column the
      longer one truncates instead of overlapping. */
   white-space: nowrap;
-  max-width: calc(50% - 14px);
+  max-width: calc(50% - 12px);
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.badge-res { left: 10px; }
-.badge-src { right: 10px; color: var(--accent-ink); }
-/* Source / Full image / heart row: an overlay at the bottom of the image,
-   shown only while hovering (or tabbing through) the card. The image itself
-   stays one big link to the full image — left-clicking it opens the full
-   image, buttons or no buttons. */
+.badge-res { left: 8px; }
+.badge-src { right: 8px; color: var(--accent-ink); }
+/* Source / Full image / heart row: a solid dark bar at the bottom of the
+   image, shown only while hovering (or tabbing through) the card. No
+   gradient scrim — flat colour only. The image itself stays one big link
+   to the full image — left-clicking it opens the full image, buttons or
+   no buttons. */
 .card .meta {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 3;
-  padding: 30px 12px 12px;
-  font-size: .88rem;
-  background: linear-gradient(to top, rgba(0, 0, 0, .72), rgba(0, 0, 0, 0));
+  padding: 8px 10px;
+  font-size: .85rem;
+  background: rgba(12, 12, 12, .88);
   opacity: 0;
   pointer-events: none;
   transition: opacity .15s ease;
@@ -539,13 +543,13 @@ code {
 .card .links a {
   flex: 1;
   text-align: center;
-  padding: 8px 10px;
+  padding: 7px 10px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
   background: var(--bg-soft);
   color: var(--text);
   font-weight: 650;
-  font-size: .86rem;
+  font-size: .84rem;
   text-decoration: none;
   transition: border-color .15s ease, background .15s ease;
 }
@@ -553,14 +557,14 @@ code {
 /* Heart / favorite button in the card's link row. */
 .card .links .fav-btn {
   flex: 0 0 auto;
-  min-width: 42px;
-  padding: 8px 10px;
+  min-width: 40px;
+  padding: 7px 9px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
   background: var(--bg-soft);
   color: var(--muted);
   font: inherit;
-  font-size: 1.05rem;
+  font-size: 1rem;
   font-weight: 700;
   line-height: 1;
   cursor: pointer;
@@ -569,35 +573,38 @@ code {
 .card .links .fav-btn:hover { border-color: var(--accent); color: #fff; }
 .card .links .fav-btn:active { transform: scale(.92); }
 .card .links .fav-btn.fav-on {
-  color: #ff5d73;
+  /* #ff7080, not the #ff5d73 the tint uses: the glyph must clear WCAG AA
+     4.5:1 even over a bright image behind the meta bar (worst case
+     4.66:1; #ff5d73 was 4.18:1 there). Border and tint keep the deeper hue. */
+  color: #ff7080;
   border-color: rgba(255, 93, 115, .55);
   background: rgba(255, 93, 115, .12);
 }
 /* Favorites toggle in the View group. */
 .favs-toggle {
-  padding: 8px 14px;
+  padding: 6px 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--bg-soft);
   color: var(--muted);
   font: inherit;
-  font-size: .9rem;
+  font-size: .88rem;
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
   transition: border-color .15s ease, background .15s ease, color .15s ease;
 }
-.favs-toggle:hover { border-color: #3d4456; color: var(--text); }
+.favs-toggle:hover { border-color: #4a4a4a; color: var(--text); }
 .favs-toggle.active {
   background: var(--accent-soft);
   border-color: var(--accent);
-  color: #dfe4ff;
+  color: #f0d48a;
 }
 
-/* Loading skeletons */
+/* Loading skeletons — flat pulse, no shimmer gradient. */
 .skeleton {
   break-inside: avoid;
-  margin-bottom: 20px;
+  margin-bottom: 10px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -607,9 +614,8 @@ code {
 .skeleton-thumb {
   /* Varied heights so the loading state already reads as a collage. */
   height: 240px;
-  background: linear-gradient(100deg, #171a22 40%, #20242f 50%, #171a22 60%);
-  background-size: 200% 100%;
-  animation: shimmer 1.3s linear infinite;
+  background: var(--bg-soft);
+  animation: pulse 1.3s ease-in-out infinite;
 }
 .skeleton:nth-child(3n) .skeleton-thumb { height: 330px; }
 .skeleton:nth-child(3n+1) .skeleton-thumb { height: 180px; }
@@ -617,15 +623,14 @@ code {
 .skeleton-line {
   height: 12px;
   margin: 12px 12px 0;
-  border-radius: 6px;
-  background: linear-gradient(100deg, #171a22 40%, #20242f 50%, #171a22 60%);
-  background-size: 200% 100%;
-  animation: shimmer 1.3s linear infinite;
+  border-radius: 3px;
+  background: var(--bg-soft);
+  animation: pulse 1.3s ease-in-out infinite;
 }
 .skeleton-line.short { width: 55%; }
-@keyframes shimmer {
-  from { background-position: 200% 0; }
-  to { background-position: -200% 0; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .55; }
 }
 
 /* Empty states — no panel, no dashed box: just centered content with a
@@ -637,7 +642,7 @@ code {
   flex-direction: column;
   align-items: center;
   text-align: center;
-  padding: clamp(48px, 8vw, 80px) 20px;
+  padding: clamp(40px, 8vw, 72px) 20px;
 }
 .empty-icon {
   width: 64px; height: 64px;
@@ -648,14 +653,14 @@ code {
   margin-bottom: 16px;
 }
 .empty-icon svg { width: 30px; height: 30px; display: block; }
-.empty-state h2 { margin: 0 0 6px; font-size: 1.25rem; font-weight: 650; letter-spacing: -.01em; }
-.empty-state p { margin: 6px 0; color: var(--muted); font-size: .95rem; max-width: 56ch; }
+.empty-state h2 { margin: 0 0 6px; font-size: 1.2rem; font-weight: 700; letter-spacing: -.01em; }
+.empty-state p { margin: 6px 0; color: var(--muted); font-size: .92rem; max-width: 56ch; }
 .empty-state ul {
   margin: 12px 0 4px;
   padding: 0;
   list-style: none;
   color: var(--muted);
-  font-size: .92rem;
+  font-size: .9rem;
   text-align: left;
 }
 .empty-state ul li { padding: 3px 0 3px 22px; position: relative; }
@@ -669,13 +674,13 @@ code {
 }
 .btn-ghost {
   margin-top: 18px;
-  padding: 10px 18px;
+  padding: 9px 16px;
   border: 1px solid var(--accent);
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--accent-ink);
   font: inherit;
-  font-size: .92rem;
+  font-size: .9rem;
   font-weight: 650;
   cursor: pointer;
   transition: background .15s ease, transform .12s ease;
@@ -685,11 +690,11 @@ code {
 
 /* ---------- Footer ---------- */
 footer {
-  margin-top: 40px;
-  padding-top: 18px;
+  margin-top: 36px;
+  padding-top: 16px;
   border-top: 1px solid var(--border);
   color: var(--faint);
-  font-size: .82rem;
+  font-size: .8rem;
 }
 footer p { margin: 0; max-width: 80ch; }
 
@@ -700,8 +705,18 @@ footer p { margin: 0; max-width: 80ch; }
   .results { columns: 280px; }
 }
 @media (max-width: 900px) {
-  .results { columns: 240px; column-gap: 16px; }
-  .card, .skeleton { margin-bottom: 16px; }
+  .results { columns: 240px; column-gap: 8px; }
+  .card, .skeleton { margin-bottom: 8px; }
+  /* 240px columns are the narrowest the card action row ever gets, and
+     the two links + heart + gaps + meta padding barely fit: at the base
+     sizes "Full image ↗" needs ~90px but gets 81px, so it wrapped to two
+     lines (uneven with its one-line neighbour) on ~740–830px viewports.
+     Compact the row here so both links fit one line down to ~265px cards;
+     at a true 240px card both links wrap symmetrically instead. */
+  .card .meta { padding: 8px; }
+  .card .links { gap: 6px; }
+  .card .links a { padding: 7px 8px; font-size: .8rem; }
+  .card .links .fav-btn { min-width: 34px; padding: 7px 8px; }
 }
 @media (max-width: 600px) {
   /* One column, not two: at a ~180px card the Source / Full image / heart
@@ -709,9 +724,9 @@ footer p { margin: 0; max-width: 80ch; }
      .card's overflow:hidden clips the heart button on every card — and on
      touch the row is always visible, so every card shows it clipped. A
      single full-width column gives the row room. */
-  .results { columns: 300px; column-gap: 12px; }
-  .card, .skeleton { margin-bottom: 12px; }
-  .chip { padding: 7px 10px; font-size: .88rem; }
+  .results { columns: 300px; column-gap: 10px; }
+  .card, .skeleton { margin-bottom: 10px; }
+  .chip { padding: 6px 9px; font-size: .84rem; }
 }
 
 /* ---------- Reduced motion ---------- */
@@ -735,13 +750,13 @@ footer p { margin: 0; max-width: 80ch; }
   display: flex;
   align-items: center;
   gap: 14px;
-  margin-top: 16px;
-  padding: 13px 16px;
+  margin-top: 14px;
+  padding: 12px 14px;
   background: rgba(245, 158, 11, .08);
   border: 1px solid rgba(245, 158, 11, .45);
   border-radius: var(--radius);
   color: #fde9c8;
-  font-size: .92rem;
+  font-size: .88rem;
 }
 .proxy-banner[hidden] { display: none; }
 .proxy-banner-icon {
@@ -754,7 +769,7 @@ footer p { margin: 0; max-width: 80ch; }
 .proxy-banner code {
   background: rgba(0, 0, 0, .35);
   padding: 1px 5px;
-  border-radius: 5px;
+  border-radius: 3px;
   font-size: .88em;
 }
 .proxy-banner .btn-ghost {
@@ -791,6 +806,13 @@ footer p { margin: 0; max-width: 80ch; }
   transition: transform .12s ease, box-shadow .12s ease;
 }
 .swatch:hover { transform: scale(1.15); }
+/* The Black swatch is a #000000 circle on a #1c1c1c page — the default
+   22%-white inset ring (1.45:1 vs the page) leaves the control nearly
+   invisible. A 50% ring (4.32:1) marks its edge. Placed before the
+   pressed-state rule so the accent halo still wins when selected. */
+.swatch[data-color="000000"] {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .5);
+}
 .swatch[aria-pressed="true"] {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .22), 0 0 0 2px var(--panel), 0 0 0 4px var(--accent);
 }
@@ -810,7 +832,7 @@ footer p { margin: 0; max-width: 80ch; }
 }
 .swatch-any:hover { border-color: var(--accent); color: var(--text); transform: none; }
 .swatch-any[aria-pressed="true"] {
-  color: #dfe4ff;
+  color: #f0d48a;
   border-color: var(--accent);
   background: var(--accent-soft);
   box-shadow: none;
@@ -826,13 +848,13 @@ footer p { margin: 0; max-width: 80ch; }
   background-color: var(--bg-soft);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  padding: 8px 12px;
+  padding: 6px 10px;
 }
 .preload-input-wrap:focus-within { border-color: var(--accent); }
 #data-preload {
   width: 64px;
   font: inherit;
-  font-size: .93rem;
+  font-size: .9rem;
   font-weight: 600;
   color: var(--text);
   background: none;
@@ -845,7 +867,7 @@ footer p { margin: 0; max-width: 80ch; }
 }
 #data-preload::-webkit-outer-spin-button,
 #data-preload::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.preload-unit { color: var(--muted); font-size: .93rem; font-weight: 600; }
+.preload-unit { color: var(--muted); font-size: .9rem; font-weight: 600; }
 .preload-presets { display: inline-flex; gap: 4px; }
 .preload-preset {
   font: inherit;
@@ -859,16 +881,18 @@ footer p { margin: 0; max-width: 80ch; }
   cursor: pointer;
 }
 .preload-preset:hover { border-color: var(--accent); color: var(--text); }
-.preload-preset.active { background: var(--accent); border-color: var(--accent); color: #0a0b0e; }
+.preload-preset.active { background: var(--accent); border-color: var(--accent); color: #1c1c1c; }
 /* Live preload progress: only visible while a search is preloading
    (the app toggles `hidden`); a text line plus a thin bar. */
 .preload-meter {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   margin: 2px 0 10px;
+  max-width: 100%;
   color: var(--muted);
-  font-size: .9rem;
+  font-size: .88rem;
   font-weight: 600;
 }
 .preload-meter[hidden] { display: none; }
@@ -888,41 +912,42 @@ footer p { margin: 0; max-width: 80ch; }
   transition: width .2s ease;
 }
 
-/* ---------- Search / Trending tabs ---------- */
-/* The tabs sit above the results and switch the grid between the last
-   search and what's trending now. */
+/* ---------- Search / Trending tabs ----------
+   Wallhaven-style text tabs: no boxes, just a label with a gold
+   underline while active, separated from the results by a hairline. */
 .tabs {
   display: flex;
-  gap: 8px;
-  margin-top: 26px;
+  gap: 4px;
+  margin-top: 22px;
+  border-bottom: 1px solid var(--border);
 }
 .tab {
-  padding: 8px 18px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--bg-soft);
+  padding: 8px 14px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  margin-bottom: -1px;
+  background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: .93rem;
+  font-size: .92rem;
   font-weight: 600;
   cursor: pointer;
-  transition: border-color .15s ease, background .15s ease, color .15s ease;
+  transition: border-color .15s ease, color .15s ease;
 }
-.tab:hover { border-color: var(--accent); color: var(--text); }
+.tab:hover { color: var(--text); }
 .tab.active {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  color: #fff;
+  background: transparent;
+  border-bottom-color: var(--accent);
+  color: var(--accent-ink);
 }
 /* Favorites is a third view with no tab of its own: while its toggle is
    active, the Search tab must not claim to be the current view (the JS
    marks it active whenever Favorites is on — setTrendingView(false)).
-   The class stays for the JS; only the look is neutralised. The
-   aria-selected attribute on the Search tab still says true in Favorites
-   view — that needs a one-line JS change, not a style one. */
+   The class stays for the JS; only the look is neutralised. */
 main:has(#favs-toggle.active) #tab-search.active {
-  background: var(--bg-soft);
-  border-color: var(--border-strong);
+  background: transparent;
+  border-bottom-color: transparent;
   color: var(--muted);
 }
 
@@ -930,7 +955,7 @@ main:has(#favs-toggle.active) #tab-search.active {
 /* Visible only in the Trending view: a one-line explainer, a refresh
    button, and the popular-search chips. The chips are plain buttons (not
    the source checkboxes) — clicking one runs that search. */
-.trending-panel { margin-top: 18px; }
+.trending-panel { margin-top: 16px; }
 .trending-head {
   display: flex;
   flex-wrap: wrap;
@@ -939,23 +964,27 @@ main:has(#favs-toggle.active) #tab-search.active {
 }
 .trending-head h2 {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 1rem;
   font-weight: 700;
   letter-spacing: -.01em;
 }
-.trending-head p { margin: 0; color: var(--muted); font-size: .92rem; flex: 1 1 420px; }
+.trending-head p { margin: 0; color: var(--muted); font-size: .88rem; flex: 1 1 300px; }
 /* The Refresh button is a .btn-ghost, whose 18px top margin is meant for
-   empty states — inside the baseline-aligned head it would sit a line low. */
+   empty states — inside the baseline-aligned head it would sit a line low.
+   The paragraph's flex-basis is 300px, not 420px: at a ~640px viewport the
+   head's content is ~613px wide, and h2 (~150) + 420-basis text + button
+   (~110) + gaps (28) = ~708px, so the button wrapped onto a line of its
+   own. 300px still lets the text take its own line below 600px. */
 .trending-head .btn-ghost { margin-top: 0; }
 #trending-chips { margin-top: 12px; }
 .trend-chip {
-  padding: 8px 14px;
+  padding: 6px 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--panel);
-  color: #dfe3ff;
+  color: #e9e9e9;
   font: inherit;
-  font-size: .9rem;
+  font-size: .88rem;
   font-weight: 600;
   cursor: pointer;
   transition: border-color .15s ease, background .15s ease, transform .12s ease;
@@ -977,13 +1006,13 @@ main:has(#favs-toggle.active) #tab-search.active {
    markImageFailed in app.js), same sizing language as the heart button. */
 .card .links .img-retry {
   flex: 0 0 auto;
-  padding: 8px 12px;
-  border-radius: 8px;
+  padding: 7px 12px;
+  border-radius: 3px;
   border: 1px solid var(--border-strong);
   background: var(--bg-soft);
   color: var(--text);
   font: inherit;
-  font-size: .86rem;
+  font-size: .84rem;
   font-weight: 650;
   cursor: pointer;
   transition: border-color .15s ease, background .15s ease;

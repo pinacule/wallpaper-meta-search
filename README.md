@@ -313,7 +313,38 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.5 (round 1 of the production-readiness loop, 2026-11-16 — unreleased)
+## Changes in v5.6 (round 2 — Wallhaven-inspired redesign, 2026-11-16 — unreleased)
+
+- **Redesigned in Wallhaven's language**: warm charcoal background
+  (`#1c1c1c`) instead of blue-black, a single restrained gold accent
+  replacing indigo, denser layout (tighter gaps and paddings, 15px body
+  type), 4px corners, flat option rows separated by hairlines instead of
+  a big settings panel, underline tabs, and a plain lowercase wordmark
+  (the icon tile is gone). No gradients anywhere — the skeleton shimmer
+  is a flat opacity pulse. All functionality and behavior unchanged.
+- **Debug fixes from the redesign**: the preload meter no longer
+  scrolls the page sideways on phones (it wraps); the card action row
+  compacts below 900px so "Full image" stops wrapping unevenly; the
+  Trending heading's text basis shrank so the Refresh button stays on
+  its line. Ten new contrast checks cover the real states (pills,
+  badges, banner, gold button text).
+- **Second debug pass**: Retry on a thumb-failed card actually probes
+  again (it was a no-op that left a blank card when the thumb already
+  was the full image, or when there was no proxy to fall back to);
+  leaving Favorites for Search marks the Search tab current again; the
+  filled heart clears WCAG AA even over a bright image; the Black color
+  swatch is actually visible now; the URL fast path falls back to the
+  parser for any character it would percent-encode.
+- **Faster**: Wallhaven and Safebooru fetch both pages in parallel
+  (~550 ms → ~150 ms each in tests); static control lookups are cached
+  (79 → 12 document queries per search); image URLs are computed once
+  per card and reused; "Best" ranking computes each log once; failed
+  images reuse the render-time cached refs. If a second page fails, the
+  source now returns the first page's results instead of failing the
+  whole source (same pattern as AlphaCoders since v5.5).
+- QA harness 223 checks, optimizer all green.
+
+## Changes in v5.5 (round 1 of the production-readiness loop, 2026-11-16 — pushed as 4d897408)
 
 - **Overlapping loads no longer clobber each other**: a slow search
   finishing after a newer one (or a trending load after a search) used to
