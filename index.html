@@ -31,7 +31,18 @@
       </form>
     </section>
 
-    <div id="proxy-banner" class="proxy-banner" role="alert" hidden>
+    <div id="proxy-banner" class="proxy-banner" role="alert">
+      <!-- Visible by default (round 9): it used to start `hidden` and
+           appear when updateProxyStatus() resolved (up to 2.5s after
+           load), pushing the whole grid down ~75px — the v5.12 browser
+           test's first search sat 75px higher than later ones because
+           its busy measurement landed before the banner appeared.
+           updateProxyStatus() hides it when a proxy or Worker is
+           confirmed, so on the hosted site (no proxy) it simply stays
+           put and the grid never moves for it. On localhost WITH a
+           proxy it flashes briefly, then hides once the probe resolves
+           (localhost answers in ms) — the same shift in reverse, once
+           per load, before any search. -->
       <span class="proxy-banner-icon" aria-hidden="true">⚠</span>
       <p id="proxy-banner-text"><strong>Local proxy not running.</strong> Proxied sources fall back to public proxies, which often fail. Run <code>./start.sh</code> (Linux/Mac) or <code>start.bat</code> (Windows), then reload.</p>
       <button type="button" id="proxy-recheck" class="btn-ghost">Check again</button>

@@ -398,28 +398,56 @@ code {
    final height before the first source reports in. One pill row is
    1.2rem of text (0.8rem at body line-height 1.5) + 10px of
    padding/border, rows are separated by the 8px row gap, so two rows
-   are calc(2.4rem + 28px). The taller rungs are the same arithmetic
-   for more rows — they are estimates (pill text varies with the
-   query), so each is right to about a row at its edges: a rung that
-   over-reserves leaves dead space, one that under-reserves leaves a
-   smaller residual shift. Above 3000px the pills fit one row, so the
-   reserve switches off entirely. */
+   are calc(2.4rem + 28px) and three rows calc(3.6rem + 46px).
+   ROUND 9 (v5.12 browser test): the two-row reserve under-reserves.
+   Packing the real settled pills (8 sources, default 1920x1080+ filter)
+   at central char width (6.5px): the Pages-site set (proxy down, most
+   proxied sources failing) is 2 rows at 1920px but 3 rows at 1280px;
+   the LONG set (proxy up, all succeed, min-res hidden suffixes) is 2
+   rows at 1920px but 3 rows below ~1700px; and with public-proxy via
+   labels ("(via corsfix — public proxy)", the hosted default) it is 3
+   rows even at 1920px — the v5.12 run-2 shift (+52px) is one status
+   row (37px) plus the meter's empty-text growth (see below) and
+   measurement noise. So the base rung is THREE rows: it covers the
+   via-label case at desktop and the LONG case down to 1280px, at the
+   price of ~37px dead space under the busy pill when the settled pills
+   only take two rows. The taller rungs are the same arithmetic for
+   more rows — they are estimates (pill text varies with the query), so
+   each is right to about a row at its edges: a rung that over-reserves
+   leaves dead space, one that under-reserves leaves a smaller residual
+   shift. Above 3000px the pills fit one row, so the reserve switches
+   off entirely. */
 .status-row.status-reserved {
-  min-height: calc(2.4rem + 28px);
+  min-height: calc(3.6rem + 46px);
   align-content: flex-start;
 }
 @media (max-width: 480px) {
-  /* Phones: 7 sources are about 10 pill lines at 412px (the Danbooru
-     pill wraps to two lines and most others take a line each), ~365px —
-     the two-row reserve would leave most of the shift in place. Measured
-     by packing the v5.7 live-run pills at 412px content width (9 lines
-     at the low char-width bound, 10 central, 11 at the high bound), so
-     10 lines is the central estimate — right to about a line either way.
-     (The first version of this rung said 8 lines and its two terms
-     disagreed — 10.8rem is 9 lines of text but 136px is 8 lines of
-     padding/gaps — under-reserving the realistic phone case by ~1.5
-     lines; fixed in the round-4 debug pass.) */
-  .status-row.status-reserved { min-height: calc(12rem + 172px); }
+  /* Phones: 8 sources are about 11 pill lines at 412px (the Danbooru
+     pill wraps to two lines and most others take a line each), ~410px —
+     the two-row reserve would leave most of the shift in place.
+     Measured by packing the real settled pills at 412px content width
+     (384px) at central char width (6.5px): the Pages-site set (proxy
+     down, most failing) is 9 lines, the LONG set (proxy up, hidden
+     suffixes) is 11, and LONG with public-proxy via labels is ~13 —
+     so 11 lines is the central estimate, right to about a line either
+     way; a rung that over-reserves leaves dead space, one that
+     under-reserves leaves a smaller residual shift. (Round 9 debug:
+     the old 10-line rung was measured for 7 sources — the 8th source
+     adds about a line; the via case stays ~2 lines short, same
+     estimate class as the search rungs.) */
+  .status-row.status-reserved { min-height: calc(13.2rem + 190px); }
+  /* Trending's own reserve (round 9): Trending has only 2 sources, so
+     it never triggers the 6-source reserve — but at phone width its
+     settled pills (2 source pills + total) take 2 rows against a 1-row
+     busy pill, a ~37px jump (measured by packing the real Trending
+     pills at 412px content width: 2 rows at every char-width bound).
+     At desktop the same pills fit one row, so this rung is phone-only
+     — no dead space at desktop. Set by loadTrending() on the fetch
+     path; cleared by setStatusReserve() and setTrendingView(false).
+     (With a public-proxy via label on the Wallhaven pill it can take 3
+     rows — a +37px residual in that case, same estimate class as the
+     search rungs.) */
+  .status-row.status-reserved-trending { min-height: calc(2.4rem + 28px); align-content: flex-start; }
 }
 @media (min-width: 3000px) {
   /* Ultrawide: the pills fit one row, so there is nothing to reserve. */
@@ -1032,10 +1060,22 @@ footer p { margin: 0; max-width: 80ch; }
    slot is now reserved continuously from busy through settled. No
    reservation on first load (empty state, no cards or skeletons) or in
    Favorites (its toggle is active; Favorites never preloads) — no dead
-   space there. */
+   space there.
+   ROUND 9: the reserved slot was still ~17px short on the FIRST search
+   after page load. The meter's text span is EMPTY until preloading
+   starts (updatePreloadMeter only sets textContent when showing), so
+   the hidden reserved meter's height was just its 4px bar + 12px
+   margins = 16px, while the visible meter with one line of text is
+   21px + 12px = 33px — the grid dropped ~17px the moment preloading
+   started at settle (most of the v5.12 run-1 +27px). The min-height
+   below pins the reserved slot to the full one-line height, so the
+   empty text costs nothing. (On later searches the text persists from
+   the previous search, so the reserved meter was already 33px — this
+   only ever bit the first search.) */
 main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)) #preload-meter[hidden] {
   display: inline-flex;
   visibility: hidden;
+  min-height: calc(1.32rem + 12px);
 }
 @media (max-width: 480px) {
   /* Phones: the shown meter wraps to two text lines at 412px (text +

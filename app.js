@@ -66,6 +66,9 @@ function statusBox() { if (!statusElCache) statusElCache = $("#status"); return 
 // height before the first source reports in.
 function setStatusReserve(sourceCount) {
   statusBox().classList.toggle("status-reserved", sourceCount >= 6);
+  // A search owns the status row now: drop Trending's own reserve (see
+  // loadTrending) so the two classes never stack.
+  statusBox().classList.remove("status-reserved-trending");
 }
 // Every other static control, looked up once per page lifetime instead of
 // once per call: loadSettings, saveSettings and the view functions used to
@@ -2809,12 +2812,17 @@ function setTrendingView(on) {
   if (t) { t.classList.toggle("active", on); t.setAttribute("aria-selected", on ? "true" : "false"); }
   const panel = staticEl("trending-panel");
   if (panel) panel.hidden = !on;
-  // Entering Trending: at most two sources, so its pills fit one row —
-  // clear any reserve left by a many-source search (renderTrendingView
-  // re-renders final pills directly, with no busy phase, so nothing here
-  // needs reserving; loadTrending re-sets it right after, to off as well
-  // since its chosen list is capped at the two trending sources).
+  // Entering Trending: at most two sources, so the 6-source reserve
+  // never applies — clear any reserve left by a many-source search
+  // (renderTrendingView re-renders final pills directly, with no busy
+  // phase, so nothing here needs reserving; loadTrending re-sets it
+  // right after, to off as well since its chosen list is capped at the
+  // two trending sources). At desktop the two Trending pills fit one
+  // row; at phone width they take two (see the status-reserved-trending
+  // rung), which loadTrending reserves on its fetch path.
+  // Leaving Trending clears its own phone reserve too (see loadTrending).
   if (on) setStatusReserve(0);
+  else statusBox().classList.remove("status-reserved-trending");
   syncPreloadView();
 }
 
@@ -2843,6 +2851,12 @@ async function loadTrending(force) {
 
   const chosen = $$(".source:checked").map((c) => c.value).filter((n) => TRENDING_SOURCES.includes(n));
   setStatusReserve(chosen.length);
+  // Trending's own reserve (round 9): the 6-source threshold never
+  // fires for 2 sources, but at phone width the settled pills take 2
+  // rows against a 1-row busy pill — reserve them (phone-only rung in
+  // style.css, so no dead space at desktop). Set synchronously with
+  // the busy pill below, like the search reserve.
+  statusBox().classList.add("status-reserved-trending");
   statusBox().innerHTML = `<span class="status-pill pill-busy"><span class="spinner"></span>Loading what's trending…</span>`;
   // The skeletons replace the cards — discard their in-flight upgrades
   // first (see discardRenderedCards), or an orphaned probe stalls the

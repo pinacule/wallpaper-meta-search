@@ -324,7 +324,36 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.12 (round 8 — sources, tags, load more, 2026-11-16 — unreleased)
+## Changes in v5.13 (round 9 — the pill shift, 2026-11-16 — unreleased)
+
+- **The pill shift is fixed, for real this time**: the v5.12 browser test
+  showed the grid still jumping +27/+10/+52px, and the round-9 bug hunt
+  found three separate causes. (1) The meter's reserved slot was ~17px
+  short on the FIRST search only — its text span is empty until
+  preloading starts, so the hidden slot was 16px against a 33px visible
+  meter; the reserve now pins the full one-line height. (2) The status
+  reserve was 2 rows, but 8 sources' settled pills take 3 rows at
+  desktop once public-proxy via labels appear — the base rung is now 3
+  rows, at the price of ~37px dead space under the busy pill when the
+  settled pills only take 2. (3) The first search sat ~75px higher than
+  later ones because the proxy banner started hidden and popped in up to
+  2.5s after load — it is now visible by default and only hides when a
+  proxy or Worker is confirmed. Trending gets its own phone-only reserve
+  (2 rows at 412px, where its pills wrap against a 1-row busy pill).
+  The debugger re-measured the phone rung for 8 sources (10 → 11
+  lines). Honest limits, in the comments: the via-label case at 1280px
+  still needs 4 rows, and no fixed reserve is exact across queries.
+- The load-more tail shift is not a bug: a page-2 item sorting near the
+  tail and moving the last few cards is the growing-set path working as
+  designed (existing nodes move, never rebuild). A ~10px residual in one
+  browser measurement has no code mechanism behind it and is most
+  likely measurement noise.
+- QA harness 419 checks (403 + 12 pill shift + 4 debugger), optimizer
+  harness all green, nothing left to take — the reserve path is 3
+  classList ops per search and there is no forced layout anywhere in
+  the app.
+
+## Changes in v5.12 (round 8 — sources, tags, load more, 2026-11-16 — pushed as 251aa0db)
 
 - **The +33px busy→settled jump is fixed**: it was the preload-meter
   slot, not the status pills. The round-6 meter reservation was gated on
