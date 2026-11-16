@@ -25,16 +25,15 @@
       <form id="search-form" role="search">
         <div class="search-box">
           <svg class="search-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="16.2" y1="16.2" x2="21" y2="21"/></svg>
-          <input id="query" type="search" placeholder="Try &ldquo;code geass emperor lelouch&rdquo;&hellip;" autocomplete="off" required>
+          <input id="query" type="search" placeholder="Try &ldquo;cyberpunk 2077&rdquo;&hellip;" autocomplete="off" required>
           <button type="submit">Search all</button>
         </div>
       </form>
-      <p class="hero-sub">Results come from the sites that let a browser ask them directly, plus a CORS proxy for the ones that don&rsquo;t. Nothing is cached or re-hosted.</p>
     </section>
 
     <div id="proxy-banner" class="proxy-banner" role="alert" hidden>
       <span class="proxy-banner-icon" aria-hidden="true">⚠</span>
-      <p id="proxy-banner-text"><strong>Local proxy not running.</strong> Wallhaven, Safebooru, Zerochan and the other proxied sources fall back to public proxies, which fail often — some sources may come back empty. Run <code>./start.sh</code> (Linux/Mac) or <code>start.bat</code> (Windows) from the project folder, then reload this page.</p>
+      <p id="proxy-banner-text"><strong>Local proxy not running.</strong> Proxied sources fall back to public proxies, which often fail. Run <code>./start.sh</code> (Linux/Mac) or <code>start.bat</code> (Windows), then reload.</p>
       <button type="button" id="proxy-recheck" class="btn-ghost">Check again</button>
     </div>
 
@@ -148,17 +147,17 @@
     </section>
 
     <details class="settings" id="group-data">
-      <summary><span class="summary-label">Settings &amp; why some sources need a proxy</span><span class="chev" aria-hidden="true"></span></summary>
+      <summary><span class="summary-label">Settings &amp; proxies</span><span class="chev" aria-hidden="true"></span></summary>
       <div class="settings-body">
-        <p>Wallhaven, Safebooru and the other non-Danbooru sources don&rsquo;t send the header that lets a web page query them directly, so those requests go through a proxy chain: your <strong>local proxy</strong> first (run <code>start.sh</code> / <code>start.bat</code>), then your own <strong>Cloudflare Worker</strong> if you set one up (see <code>worker/README.md</code>), then a custom proxy if you enter one, then public fallbacks (corsfix, allorigins, cors.lol — flaky, tried last). Danbooru allows direct requests and never touches a proxy. The status line under each search tells you which path actually worked.</p>
+        <p>Most sources can&rsquo;t be queried directly from a web page, so requests go through a proxy chain: your <strong>local proxy</strong> first, then your <strong>Cloudflare Worker</strong>, then a custom proxy, then public fallbacks (flaky, tried last). Danbooru works directly — no proxy needed.</p>
         <p id="proxy-status" class="hint">Checking for local proxy…</p>
-        <label class="settings-field">Your Cloudflare Worker URL <span class="hint">(optional — most reliable; paste the URL after deploying <code>worker/</code>)</span>
+        <label class="settings-field">Your Cloudflare Worker URL <span class="hint">(optional — most reliable)</span>
           <input id="worker-url" type="url" placeholder="https://wallpaper-meta-search-proxy.&lt;you&gt;.workers.dev">
         </label>
-        <label class="settings-field">Custom CORS proxy <span class="hint">(optional — prefix, the target URL is appended URL-encoded; tried after the Worker)</span>
+        <label class="settings-field">Custom CORS proxy <span class="hint">(optional — tried after the Worker)</span>
           <input id="proxy" type="url" placeholder="https://api.allorigins.win/raw?url=">
         </label>
-        <label class="settings-field">Wallhaven API key <span class="hint">(optional — only needed for NSFW mode; free, from your Wallhaven account &rarr; API; stored only in this browser)</span>
+        <label class="settings-field">Wallhaven API key <span class="hint">(optional — NSFW only; from your Wallhaven account &rarr; API; stored locally)</span>
           <input id="wh-key" type="text" autocomplete="off">
         </label>
       </div>
@@ -167,7 +166,7 @@
     <section class="site-links" aria-label="Search on other sites">
       <div class="site-links-head">
         <h2>Also search on</h2>
-        <p>WallpaperAccess and Gelbooru can&rsquo;t show results inline (see README), so one click opens their own search for the same query.</p>
+        <p>WallpaperAccess and Gelbooru can&rsquo;t show results here — one click opens their search for the same query.</p>
       </div>
       <div id="site-buttons"></div>
     </section>
@@ -180,11 +179,12 @@
     <section id="trending-panel" class="trending-panel" hidden>
       <div class="trending-head">
         <h2>Popular right now</h2>
-        <p class="hint">Live from Wallhaven's daily toplist and Danbooru's most popular posts today — the same Content, resolution and ratio filters as search apply. AlphaCoders has no real trending feed (its top page is four featured items), so it sits this one out.</p>
+        <p class="hint">Wallhaven&rsquo;s daily toplist and Danbooru&rsquo;s most popular posts today — same filters as search.</p>
         <button type="button" id="trending-refresh" class="btn-ghost">↻ Refresh</button>
       </div>
+      <p class="trend-chips-label">Popular searches</p>
       <div class="chip-group" id="trending-chips" role="group" aria-label="Popular searches">
-        <button type="button" class="trend-chip" data-query="code geass">code geass</button>
+        <button type="button" class="trend-chip" data-query="landscape">landscape</button>
         <button type="button" class="trend-chip" data-query="catgirl">catgirl</button>
         <button type="button" class="trend-chip" data-query="cyberpunk 2077">cyberpunk 2077</button>
         <button type="button" class="trend-chip" data-query="anime">anime</button>
@@ -212,14 +212,14 @@
           <svg viewBox="0 0 64 64" width="72" height="72" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="10" width="44" height="34" rx="6"/><circle cx="21" cy="23" r="4.5"/><path d="M10 38l11-11 9 9 7-7 11 11"/><circle cx="48" cy="46" r="9"/><line x1="54.5" y1="52.5" x2="60" y2="58"/></svg>
         </div>
         <h2>Find your next wallpaper</h2>
-        <p>Type something above and hit <strong>Search all</strong> — results from Danbooru, Safebooru, Wallhaven, AlphaCoders, Wallpapers.com, WallpaperCave and Zerochan land here in one grid.</p>
-        <p class="hint">Tip: one or two words work best, e.g. <em>code geass</em> or <em>emperor lelouch</em>.</p>
+        <p>Type something above and hit <strong>Search all</strong>.</p>
+        <p class="hint">Tip: one or two words work best, e.g. <em>cyberpunk 2077</em> or <em>neon</em>.</p>
       </div>
     </section>
   </main>
 
   <footer>
-    <p>Sources are searched live; nothing is cached or re-hosted. Respect each site&rsquo;s terms. Wallhaven, AlphaCoders, Danbooru, Safebooru, Wallpapers.com, WallpaperCave and Zerochan are not affiliated with this project.</p>
+    <p>Sources are searched live; nothing is cached or re-hosted. Respect each site&rsquo;s terms. Not affiliated with the listed sources.</p>
   </footer>
 
 </div>

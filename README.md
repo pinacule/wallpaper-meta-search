@@ -313,7 +313,44 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.9 (round 5 — bug hunt on the v5.8 browser test, 2026-11-16 — unreleased)
+## Changes in v5.10 (round 6 — search vs Trending + copy cleanup, 2026-11-16 — unreleased)
+
+- **Trending chips are genuinely popular terms now**: "code geass" was the
+  only test artifact in the chip list (hardcoded during Code Geass testing)
+  — replaced with "landscape"; the other 11 are unchanged generic popular
+  topics. The chips also get a visible "Popular searches" label — they only
+  had an aria-label before, so nothing on screen said what they are, and
+  they read as the user's own recent searches. The search placeholder and
+  hint examples lost their Code Geass references too ("cyberpunk 2077",
+  "neon").
+- **Copy cleanup**: the site's text is cut down across the board — the hero
+  sub is gone, the proxy banner and Settings explanations are short, the
+  Trending description is one line, the footer and empty state lost their
+  duplicated source lists, and failure reasons are terse ("Timed out after
+  15 s", "Blocked or missing"). Everything the user needs to act on is kept
+  — Worker setup instructions, what a control does, why something failed —
+  in fewer words.
+- **Skeleton pulse was running but invisible**: the old opacity pulse ran
+  over --bg-soft (#262626) on a --panel (#232323) card — a 3-step gap — so
+  the composite moved ~1 RGB step, exactly the v5.9 browser test's constant
+  RGB 36–38 across 81 samples. The keyframes now animate background-color
+  between #171717 and #2c2c2c, the same family as the card pulse. The card
+  pulse itself was verified NOT broken — the test measured skeletons, never
+  a card anchor (after render the preload pump had already loaded every
+  image).
+- **Preload meter unreserved**: it sits above #status, outside the round-4
+  reserve, so appearing or disappearing moved the grid by its full height
+  (~33px at desktop) — the likeliest cause of the v5.9 test's run-2 ~17px
+  drop on settle. Its slot is now reserved whenever the grid has cards
+  (CSS-only, `:has()`), so showing or hiding it moves nothing. No
+  reservation on first load or in Favorites (which never preloads) — no
+  dead space there. Trade-off, same as round 4's reserve: after preloading
+  ends, the reserved slot is a ~33px dead band until the view changes.
+- QA harness 294 checks (268 + 10 new Group AC + 9 new Group AB + 7 new
+  Group AD), optimizer: nothing left again (round-2 claims re-verified;
+  live search is network-bound, not code-bound).
+
+## Changes in v5.9 (round 5 — bug hunt on the v5.8 browser test, 2026-11-16 — pushed as fc6ec2cc)
 
 - **Late reshuffle — investigated, no app mechanism exists**: the v5.8
   browser test saw the top-row composition change once between a

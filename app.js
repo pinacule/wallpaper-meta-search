@@ -253,10 +253,10 @@ async function updateProxyStatus() {
   const hosted = window.location.protocol === "https:";
   if (el) {
     el.textContent = up
-      ? "Local proxy detected on port 8787 — Wallhaven and the other proxied sources will go through it."
+      ? "Local proxy detected — port 8787."
       : workerUp
-        ? "Cloudflare Worker detected — Wallhaven and the other proxied sources will go through it."
-        : "Local proxy not running — sources will try your Worker, then public proxies. Run start.sh (Linux/Mac) or start.bat (Windows) to start it.";
+        ? "Cloudflare Worker detected."
+        : "No local proxy — run start.sh or start.bat to start one.";
   }
   if (banner) {
     // The banner warns that proxied sources are unreliable without a
@@ -268,8 +268,8 @@ async function updateProxyStatus() {
       // Plain wording: name what breaks and the exact fix. The banner is
       // sticky (see style.css) so it can't scroll away unnoticed.
       bannerText.innerHTML = hosted
-        ? "<strong>Local proxy is OFF — and the hosted version can't reach one.</strong> Set up the Cloudflare Worker (see <code>worker/README.md</code>) and paste its URL in Settings, or run the app locally with <code>./start.sh</code> and reload — right now Zerochan fails and images may not load; the public proxies are unreliable."
-        : "<strong>Local proxy is OFF.</strong> Run <code>./start.sh</code> (Linux/Mac) or <code>start.bat</code> (Windows) from the project folder, then reload this page. Right now Zerochan fails and images may not load — the public proxies are unreliable.";
+        ? "<strong>Local proxy is OFF — the hosted version can't reach one.</strong> Set up the Cloudflare Worker (see <code>worker/README.md</code>) and paste its URL in Settings, or run the app locally with <code>./start.sh</code>. Zerochan fails and images may not load — public proxies are unreliable."
+        : "<strong>Local proxy is OFF.</strong> Run <code>./start.sh</code> (Linux/Mac) or <code>start.bat</code> (Windows) from the project folder, then reload. Zerochan fails and images may not load — public proxies are unreliable.";
     }
   }
 }
@@ -717,7 +717,7 @@ function wallhavenParams(q, opts = {}) {
   if (p === "nsfw") {
     const keyEl = staticEl("wh-key");
     const key = keyEl ? keyEl.value.trim() : "";
-    if (!key) throw new Error("needs a Wallhaven API key for NSFW — paste one in Settings (free, from your Wallhaven account)");
+    if (!key) throw new Error("needs a Wallhaven API key for NSFW — paste one in Settings");
     params.set("apikey", key);
   }
   const m = minRes();
@@ -1056,8 +1056,8 @@ function probeUrl(url, done) {
 // to retry — their thumbnail IS the image — so theirs stays hidden).
 function failReasonText(reason) {
   return reason === "timeout"
-    ? "Timed out after 15 s — the file may be very large"
-    : "Couldn't load — blocked or missing on this connection";
+    ? "Timed out after 15 s"
+    : "Blocked or missing";
 }
 function markImageFailed(img, reason) {
   img.dataset.state = "failed";
@@ -1707,7 +1707,7 @@ function renderResults(results, reports, q) {
       <div class="empty-state">
         <div class="empty-icon" aria-hidden="true" style="font-size:64px;line-height:1">♡</div>
         <h2>No favorites yet</h2>
-        <p>Tap the ♡ on any wallpaper to save it here — favorites are kept in this browser and survive reloads.</p>
+        <p>Tap the ♡ on any wallpaper to save it here.</p>
       </div>`;
       return;
     }
@@ -1721,7 +1721,7 @@ function renderResults(results, reports, q) {
           <svg viewBox="0 0 64 64" width="72" height="72" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="10" width="44" height="34" rx="6"/><circle cx="21" cy="23" r="4.5"/><path d="M10 38l11-11 9 9 7-7 11 11"/><circle cx="48" cy="46" r="9"/><line x1="54.5" y1="52.5" x2="60" y2="58"/></svg>
         </div>
         <h2>No ${label} wallpapers</h2>
-        <p>But <strong>${uniq.length}</strong> matching wallpaper${uniq.length === 1 ? "" : "s"} exist${uniq.length === 1 ? "s" : ""} in other ratios.</p>
+        <p><strong>${uniq.length}</strong> matching wallpaper${uniq.length === 1 ? "" : "s"} in other ratios.</p>
         <button type="button" class="btn-ghost" data-action="clear-ratio">Show all ratios</button>
       </div>`;
       return;
@@ -1734,7 +1734,7 @@ function renderResults(results, reports, q) {
           <svg viewBox="0 0 64 64" width="72" height="72" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="10" width="44" height="34" rx="6"/><circle cx="21" cy="23" r="4.5"/><path d="M10 38l11-11 9 9 7-7 11 11"/><circle cx="48" cy="46" r="9"/><line x1="54.5" y1="52.5" x2="60" y2="58"/></svg>
         </div>
         <h2>No wallpapers at ${m.w}×${m.h} or above</h2>
-        <p>But <strong>${hiddenTotal.toLocaleString()}</strong> matching post${hiddenTotal === 1 ? "" : "s"} exist${hiddenTotal === 1 ? "s" : ""} below that size.</p>
+        <p><strong>${hiddenTotal.toLocaleString()}</strong> matching post${hiddenTotal === 1 ? "" : "s"} below that size.</p>
         <button type="button" class="btn-ghost" data-action="clear-res">Show all resolutions</button>
       </div>`;
       return;
@@ -1747,7 +1747,7 @@ function renderResults(results, reports, q) {
         <h2>No wallpapers found</h2>
         <p>Nothing matched <strong>&ldquo;${escapeHtml(q || "")}&rdquo;</strong> at the current filters.</p>
         <ul>
-          <li>Try one or two words instead of a long phrase</li>
+          <li>Try one or two words</li>
           <li>Lower the min. resolution filter</li>
           <li>Enable another source, or try the site links above</li>
         </ul>
@@ -2138,7 +2138,7 @@ function sourceReport(name, items, passing) {
     // red "no results parsed" one. A real fetch/parse failure still
     // throws in the adapter and lands in the red pill below.
     // No purity/hidden suffixes here — they would only muddy the point.
-    msg = `0 found — nothing here for this query${viaLabel}`;
+    msg = `0 found${viaLabel}`;
   } else {
     msg = `${passing.length} found${viaLabel}`;
     if (name === "wallhaven" && wallColor()) msg += ` · color #${wallColor()}`;
@@ -2157,16 +2157,14 @@ function sourceReport(name, items, passing) {
       // scraped sites have no purity filter at all.
       if (name === "danbooru") msg += " · explicit only";
       else if (name === "wallhaven") msg += " · NSFW (API key set)";
-      else if (name === "safebooru") msg += " · no NSFW here — safe-only site";
+      else if (name === "safebooru") msg += " · safe-only site";
       else msg += " · no purity filter";
     }
   }
   const hidden = items.hidden || 0;
   const m = minRes();
   if (hidden > 0 && m) {
-    msg += ` · ${hidden.toLocaleString()} below ${m.w}×${m.h}` +
-      (items.hiddenScope === "checked" ? ` (of ${items.examined || 0} checked)` : "") +
-      ` — lower the filter to see them`;
+    msg += ` · ${hidden.toLocaleString()} below ${m.w}×${m.h} — lower the filter to see them`;
   }
   return [name, msg, true, hidden];
 }
