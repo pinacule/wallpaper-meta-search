@@ -3839,8 +3839,16 @@ resultsBox().addEventListener("click", (ev) => {
     // here. The placeholder has pointer-events:none, so a click on a
     // failed card's image area reaches the anchor too — the viewer
     // shows the error note for it.
+    // Resolve first, preventDefault second: if the card isn't in the
+    // lookup or the viewer box is gone, openLightbox would return
+    // without opening — and a swallowed click would be exactly the
+    // dead-viewer failure that shipped in v5.18 (preventDefault ran,
+    // then the open failed). Let the link open in a new tab instead.
+    const thumbCard = thumbAnchor.closest(".card");
+    const thumbImg = thumbCard && (thumbCard._img || thumbCard.querySelector("img"));
+    if (!thumbImg || !renderedByPage.has(thumbImg.dataset.page) || !lightboxEls().box) return;
     ev.preventDefault();
-    openLightbox(thumbAnchor.closest(".card"));
+    openLightbox(thumbCard);
     return;
   }
   if (ev.target.closest('[data-action="clear-ratio"]')) {
@@ -3908,7 +3916,7 @@ document.addEventListener("keydown", (ev) => {
   if (ev.key === "Tab" && lightboxItem) {
     const els = lightboxEls();
     const focusables = [els.source, els.full, els.fav];
-    if (!els.tags.hidden) focusables.push(...els.tags.querySelectorAll(".tag-chip"));
+    if (els.tags && !els.tags.hidden) focusables.push(...els.tags.querySelectorAll(".tag-chip"));
     focusables.push(els.close);
     const list = focusables.filter(Boolean);
     if (!list.length) return;

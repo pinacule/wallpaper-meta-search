@@ -259,19 +259,19 @@
   <div id="lightbox" class="lightbox" hidden role="dialog" aria-modal="true" aria-label="Wallpaper viewer">
     <div class="lightbox-backdrop" data-action="close-lightbox" aria-hidden="true"></div>
     <figure class="lightbox-figure">
-      <img class="lightbox-img" alt="">
-      <p class="lightbox-error" hidden>Image couldn't load</p>
+      <img id="lightbox-img" class="lightbox-img" alt="">
+      <p id="lightbox-error" class="lightbox-error" hidden>Image couldn't load</p>
       <figcaption class="lightbox-meta">
-        <div class="lightbox-caption"></div>
+        <div id="lightbox-caption" class="lightbox-caption"></div>
         <div class="lightbox-links">
-          <a class="lightbox-source" target="_blank" rel="noopener">Source page ↗</a>
-          <a class="lightbox-full" target="_blank" rel="noopener">Full image ↗</a>
-          <button type="button" class="fav-btn lightbox-fav" data-action="toggle-fav" aria-pressed="false" aria-label="Save to favorites" title="Save to favorites">♡</button>
+          <a id="lightbox-source" class="lightbox-source" target="_blank" rel="noopener">Source page ↗</a>
+          <a id="lightbox-full" class="lightbox-full" target="_blank" rel="noopener">Full image ↗</a>
+          <button type="button" id="lightbox-fav" class="fav-btn lightbox-fav" data-action="toggle-fav" aria-pressed="false" aria-label="Save to favorites" title="Save to favorites">♡</button>
         </div>
-        <div class="tags lightbox-tags"></div>
+        <div id="lightbox-tags" class="tags lightbox-tags"></div>
       </figcaption>
     </figure>
-    <button type="button" class="lightbox-close" data-action="close-lightbox" aria-label="Close viewer">✕</button>
+    <button type="button" id="lightbox-close" class="lightbox-close" data-action="close-lightbox" aria-label="Close viewer">✕</button>
   </div>
 
   <footer>

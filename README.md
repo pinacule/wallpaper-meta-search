@@ -326,7 +326,39 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.19 (round 14 — the meter MB fall, 2026-11-16)
+## Changes in v5.20 (round 16 — the viewer that never opened, 2026-11-17)
+
+- **The viewer actually opens now**: v5.18 shipped with the viewer
+  dead — clicking a card did nothing at all. Root cause: the
+  viewer's code looks its inner elements up by ID, but the page
+  markup gave them only classes, so it crashed the instant it
+  tried to open — after the click had already swallowed the
+  navigation. The 8 missing IDs are now in the markup
+  (`lightbox-img`, `lightbox-error`, `lightbox-caption`,
+  `lightbox-source`, `lightbox-full`, `lightbox-fav`,
+  `lightbox-tags`, `lightbox-close`).
+- **The test harness can no longer hide this class of bug**: the
+  harness builds its own copy of the viewer *with* IDs, so all
+  634 checks passed while the real page was broken. New checks
+  read the real page markup and assert every ID the code looks up
+  exists there — including direct lookups and the filter buttons'
+  dynamic ones — plus a check that the harness copy's IDs match
+  the real file's, and a check that no ID is duplicated.
+- **Debugger pass (1 latent bug fixed)**: the click handler
+  swallowed the click before checking the viewer could open — the
+  exact shape that shipped dead. It now resolves the card and
+  checks the viewer exists first; if either is missing, the link
+  just opens in a new tab like before the viewer existed.
+- **Optimizer pass (nothing left to take)**: the fix costs zero
+  at runtime (markup IDs + one per-keypress check while the viewer
+  is open); the viewer's element lookups are cached after the
+  first open (8 lookups, then 0). Standing claims re-verified
+  (counts walk ~5.6 ms/call, meter repaint ~0.006 ms/call,
+  growing render ~3.3× faster than a rebuild).
+- QA harness 650 checks (634 + 5 bug hunt + 5 debugger +
+  6 optimizer), optimizer all green.
+
+## Changes in v5.19 (round 14 — the meter MB fall, 2026-11-16 — pushed as 8d646cb2)
 
 - **The meter's MB no longer falls across Load more**: the v5.16
   live test caught it dropping 161 MB → 144 MB while the loaded
@@ -361,7 +393,7 @@ the ↻ Refresh button forces a fresh load.
   check flakes in both directions in the shim — noise, green on
   re-run, same class as rounds 9–13).
 
-## Changes in v5.18 (round 15 — in-site viewer, 2026-11-16)
+## Changes in v5.18 (round 15 — in-site viewer, 2026-11-16 — pushed as 8d646cb2)
 
 - **Click a wallpaper to view it inside the site**: the card's image
   now opens a viewer (lightbox) instead of a new tab, showing the
