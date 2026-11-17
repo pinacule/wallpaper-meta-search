@@ -1598,7 +1598,8 @@ function shortReason(err, sourceName) {
 // 4:3 for size-unknown items) and the img fills it with object-fit:
 // contain. A failed card is NEVER removed (removal is itself a jump) —
 // it becomes a fixed-height placeholder of the same reserved size, with
-// its Source page / Full image links still working.
+// its heart and Retry still working (the Source page / Full image links
+// live in the viewer since round 15).
 const imageLoadConfig = { timeoutMs: 15000, retryDelayMs: 1500, maxParallelProbes: 3 };
 
 // Global cap on full-res probes. Each probe can be a multi-MB download, and
@@ -2531,6 +2532,13 @@ function restoreImgAlt(img) {
 // host doesn't. If an upgrade is already running, the probe resolves it.
 function imgThumbError(img) {
   if (img.dataset.state === "failed") return;
+  // A detached img's in-flight fetch can still error after a rebuild
+  // discarded the card: failing it would strip the LIVE card's page from
+  // loadedPages (the meter reads DOM classes, so it wouldn't fall — but
+  // the next rebuild would lose the restore shortcut and hide a loaded
+  // card under the loaded-only filter until the observer re-verifies it).
+  // A detached img displays nothing; its errors are stale by definition.
+  if (!img.isConnected) return;
   // Remember the failure for loadFullImage's early return: the src still
   // equals the display URL, but the image never arrived — without this
   // flag the card would declare itself done instead of probing. It must
@@ -2545,10 +2553,34 @@ function imgThumbError(img) {
   // a failed thumbnail is already a total failure.
   if (img.dataset.thumbOnly) { markImageFailed(img, "error"); return; }
   // The visible image IS the full-res one (its probe already succeeded, or
-  // the thumb is the full image — WallpaperCave) and it just errored:
-  // there is nothing left to try. Show the placeholder instead of leaving
-  // a hidden card with no explanation.
-  if (img.dataset.state === "full") { markImageFailed(img, "error"); return; }
+  // the thumb is the full image — WallpaperCave) and it just errored.
+  // The probe already downloaded this URL once, so a single fetch failure
+  // of the display <img> is a transient (proxy 429, connection reset),
+  // not proof the image is bad — the same one retry the probe itself gets
+  // (see probeUrl). Retry the same URL once before failing the card: the
+  // src is cleared first so the same URL actually re-fetches (setting src
+  // to its current value is a no-op in browsers). Without the retry, a
+  // flaky proxy strips probe-verified cards and the meter's MB falls while
+  // the loaded count rises (round 14: the v5.16 browser test, 161 MB ->
+  // 144 MB across Load more). A second failure is a genuine failure and
+  // fails the card as before.
+  if (img.dataset.state === "full") {
+    if (!img._fullRetried) {
+      img._fullRetried = true;
+      // Retry the URL that is actually displaying. An alternate-settled
+      // card shows its alternate, not data-full — and data-full already
+      // failed its probe twice, so retrying it would kill a card whose
+      // alternate is fine (the viewer already refuses to re-fetch the
+      // full for these cards, see openLightbox). Fall back to data-full
+      // only if the img somehow has no src.
+      const cur = img.getAttribute("src") || img.dataset.full;
+      img.removeAttribute("src");
+      img.src = cur;
+      return;
+    }
+    markImageFailed(img, "error");
+    return;
+  }
   // Single candidate and the thumb already IS it (WallpaperCave, no alts):
   // the upgrade would be a no-op, so a thumb error here is already a total
   // failure — don't hide the img and wait on a probe that returns instantly.
@@ -2782,35 +2814,33 @@ function cardHtml(r, fav) {
   // proxiedImageUrl(r.full), computed above — no second call per card.)
   if (fullUrl !== r.full && !alts.includes(r.full)) alts.push(r.full);
   // Tags, when the source gave any (the API sources — Danbooru,
-  // Safebooru, Wallhaven, Gelbooru; scrapers have none): small chips under
-  // the links row, inside the meta overlay — so they are revealed with the
-  // action row on hover and always visible on touch (the same
-  // @media (hover: none) rule that keeps the action row visible), and
-  // so they never touch the anchor or its aspect-ratio reserve (the
-  // meta sits outside the anchor, in the card). At most 6 chips; the
-  // rest collapse into a muted "+N" count. Every chip is escaped
-  // (escapeHtml) — a tag is untrusted API text, never markup.
-  const tags = r.tags || [];
-  const shownTags = tags.slice(0, 6);
-  const extraTags = tags.length - shownTags.length;
-  const tagsHtml = tags.length ? `
-        <div class="tags">${shownTags.map((t) => `<button type="button" class="tag-chip" data-action="search-tag" data-tag="${escapeHtml(t)}" title="Search for ${escapeHtml(t)}">${escapeHtml(t)}</button>`).join("")}${extraTags > 0 ? `<span class="tag-more" title="${extraTags} more tag${extraTags === 1 ? "" : "s"}">+${extraTags}</span>` : ""}</div>` : "";
+  // Safebooru, Wallhaven, Gelbooru; scrapers have none): they live in
+  // the viewer now (round 15), not on the card — see tagsHtmlFor below.
+  // The card keeps only the image, the heart and Retry, so scrolling
+  // stays clean; the tags belong to the one wallpaper being viewed.
   return `
     <article class="card">
       <a class="thumb" href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${escapeHtml(thumbSrc)}" data-full="${escapeHtml(displayUrl)}" data-alts="${escapeHtml(alts.join("|"))}"${r.thumbOnly ? ' data-thumb-only="1"' : ""} data-cost="${cost}" data-page="${escapeHtml(r.page)}" data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
         <span class="badge badge-res">${res}</span>
         <span class="badge badge-src">${r.source}</span>
       </a>
-      <div class="meta">
-        <div class="links">
-          <a href="${escapeHtml(r.page)}" target="_blank" rel="noopener">Source page ↗</a>
-          <a class="full-link" href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener">Full image ↗</a>
-          <button type="button" class="img-retry" data-action="retry-img" style="display:none">Retry</button>
-          <button type="button" class="fav-btn${fav ? " fav-on" : ""}" data-action="toggle-fav" data-page="${escapeHtml(r.page)}" aria-pressed="${fav ? "true" : "false"}" aria-label="Save to favorites" title="Save to favorites">${fav ? "♥" : "♡"}</button>
-        </div>
-        ${tagsHtml}
-      </div>
+      <button type="button" class="fav-btn${fav ? " fav-on" : ""}" data-action="toggle-fav" data-page="${escapeHtml(r.page)}" aria-pressed="${fav ? "true" : "false"}" aria-label="Save to favorites" title="Save to favorites">${fav ? "♥" : "♡"}</button>
+      <button type="button" class="img-retry" data-action="retry-img" style="display:none">Retry</button>
     </article>`;
+}
+
+// Tag chips for the viewer (round 15): ALL of them — the viewer is the
+// one place tags live now that the card carries none, and the "+N" count
+// the card used was a space-saving device with nowhere to expand to
+// here (a dead label in the detail view). Tags are already capped at 12
+// when stored (capTags), so this is at most 12 chips, and they wrap.
+// Every chip is escaped (escapeHtml) — a tag is untrusted API text,
+// never markup. Clicking a chip searches that tag (see the viewer click
+// handler) — the same path as a Trending chip.
+function tagsHtmlFor(r) {
+  const tags = r.tags || [];
+  return tags.length ? `
+        <div class="tags">${tags.map((t) => `<button type="button" class="tag-chip" data-action="search-tag" data-tag="${escapeHtml(t)}" title="Search for ${escapeHtml(t)}">${escapeHtml(t)}</button>`).join("")}</div>` : "";
 }
 
 // Build one card node from the shared template: used by the growth path
@@ -3599,6 +3629,142 @@ async function loadTrending(force) {
   renderResults(all, reports, "Trending");
 }
 
+// ---------- In-site viewer (round 15) ----------
+// Clicking a card's image opens the wallpaper here, as large as the
+// viewport allows, instead of a new tab. The tags, Source page and Full
+// image links moved here from the card (the grid keeps only the image,
+// the heart and Retry). X, Esc and the backdrop all close it; the page
+// behind doesn't scroll while it's open. Focus goes to the X on open
+// and returns to the card on close.
+let lightboxItem = null; // the item currently open (null = closed)
+let lightboxCard = null; // the card element it was opened from
+let lightboxLastFocus = null; // element to return focus to on close
+
+function lightboxEls() {
+  return {
+    box: staticEl("lightbox"),
+    img: staticEl("lightbox-img"),
+    err: staticEl("lightbox-error"),
+    caption: staticEl("lightbox-caption"),
+    source: staticEl("lightbox-source"),
+    full: staticEl("lightbox-full"),
+    fav: staticEl("lightbox-fav"),
+    tags: staticEl("lightbox-tags"),
+    close: staticEl("lightbox-close"),
+  };
+}
+
+// One place for the heart's visual state, shared by the card button and
+// the viewer's button (both must agree — toggling in the viewer syncs
+// the card behind it, and vice versa).
+function setFavButton(btn, on) {
+  if (!btn) return;
+  btn.classList.toggle("fav-on", on);
+  btn.textContent = on ? "♥" : "♡";
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+function openLightbox(card) {
+  const els = lightboxEls();
+  if (!els.box || !card) return;
+  const img = card._img || card.querySelector("img");
+  if (!img) return;
+  const item = renderedByPage.get(img.dataset.page);
+  if (!item) return;
+  const anchor = img._anchor || img.closest("a.thumb");
+  // The full URL is the anchor's href — the same URL the "Full image"
+  // link uses, never a fallback or an alternate (see B7/AJ4). The viewer
+  // shows what the card shows first (thumbnail or sample) and swaps to
+  // the full when it arrives; the preload uses the exact full URL, so the
+  // browser cache dedupes it with the card's own upgrade (no second
+  // download of the same URL).
+  const fullUrl = anchor ? anchor.getAttribute("href") : proxiedImageUrl(item.full);
+  const currentSrc = img.getAttribute("src") || "";
+  const res = card.querySelector(".badge-res")?.textContent || "";
+  const srcName = card.querySelector(".badge-src")?.textContent || item.source || "";
+  // Capture the return target only on the FIRST open: a re-open while
+  // the viewer is already up would re-capture it, and focus was already
+  // moved to the X by the first open — so closing would strand focus on
+  // the hidden X instead of the card that opened it. (A re-open is a
+  // keyboard path: Tab out of the viewer, Enter on another card.)
+  if (!lightboxItem) lightboxLastFocus = document.activeElement;
+  lightboxItem = item;
+  lightboxCard = card;
+  els.caption.textContent = [srcName, res].filter(Boolean).join(" · ");
+  els.source.setAttribute("href", item.page);
+  els.full.setAttribute("href", fullUrl);
+  els.fav.setAttribute("data-page", item.page);
+  setFavButton(els.fav, favorites.some((f) => f.page === item.page));
+  els.tags.innerHTML = tagsHtmlFor(item);
+  els.tags.hidden = !(item.tags && item.tags.length);
+  els.err.hidden = true;
+  els.img.style.display = "";
+  if (img.dataset.state === "failed") {
+    // Nothing to show: the thumbnail failed too. The links still work.
+    els.img.removeAttribute("src");
+    els.img.style.display = "none";
+    els.err.hidden = false;
+  } else {
+    els.img.setAttribute("src", currentSrc);
+    els.img.setAttribute("alt", img.getAttribute("alt") || "");
+    if (currentSrc === fullUrl) {
+      // Already showing the full (or the full IS the thumb, e.g.
+      // WallpaperCave): nothing to upgrade to.
+    } else if (img.dataset.state === "thumb" && !card.classList.contains("full-failed")) {
+      // The card is still on its thumbnail/sample and the full hasn't
+      // failed yet: kick the card's own upgrade (no-op if already
+      // started — see loadFullImage) and preload the full for the
+      // viewer. On load, swap the viewer to the full; on error, keep
+      // what the card shows (re-read at error time — the card may have
+      // settled on an alternate by then). A card that settled on an
+      // alternate (state "full", src is the alternate) or on its
+      // thumbnail (Preview only) keeps what it shows — the full already
+      // failed there, so the viewer doesn't re-fetch it.
+      loadFullImage(img);
+      const pre = new Image();
+      pre.onload = () => {
+        if (lightboxItem === item) els.img.setAttribute("src", fullUrl);
+      };
+      pre.onerror = () => {
+        if (lightboxItem !== item) return;
+        const nowSrc = img.getAttribute("src") || "";
+        if (nowSrc && nowSrc !== els.img.getAttribute("src")) els.img.setAttribute("src", nowSrc);
+        if (img.dataset.state === "failed") {
+          els.img.style.display = "none";
+          els.err.hidden = false;
+        }
+      };
+      pre.src = fullUrl;
+    }
+  }
+  els.box.hidden = false;
+  document.body.classList.add("lightbox-open");
+  if (els.close && typeof els.close.focus === "function") els.close.focus();
+}
+
+function closeLightbox() {
+  if (!lightboxItem) return;
+  const els = lightboxEls();
+  lightboxItem = null;
+  lightboxCard = null;
+  if (els.box) els.box.hidden = true;
+  document.body.classList.remove("lightbox-open");
+  const back = lightboxLastFocus;
+  lightboxLastFocus = null;
+  // The card that opened the viewer may be gone — unfavoriting from the
+  // viewer in the Favorites view rebuilds the grid, so the saved anchor
+  // is detached, and focusing it would strand focus on a node that
+  // isn't in the page. Fall back to the view's toggle there, the search
+  // box otherwise. (isConnected is false for a detached node; the
+  // !== false form keeps this safe where isConnected is undefined.)
+  if (back && typeof back.focus === "function" && back.isConnected !== false) {
+    back.focus();
+  } else {
+    const fb = favsView ? staticEl("favs-toggle") : staticEl("query");
+    if (fb && typeof fb.focus === "function") fb.focus();
+  }
+}
+
 // Heart buttons (delegated) + retry buttons + empty-state actions: drop
 // the device/ratio filter and re-render from memory, or drop the
 // min-resolution filter and search again.
@@ -3622,6 +3788,10 @@ resultsBox().addEventListener("click", (ev) => {
     img.dataset.upgradeStarted = "";
     img.dataset.state = "thumb";
     img.dataset.failReason = "";
+    // A fresh attempt gets its one display-fetch retry again (see the
+    // state="full" branch in imgThumbError): without this, a retried card
+    // that errors once more would fail immediately instead of retrying.
+    img._fullRetried = false;
     retryBtn.style.display = "none";
     // Clear the "Preview only" state too (see markFullFailed): a card
     // whose upgrade failed but whose thumbnail was kept shows the badge
@@ -3655,10 +3825,22 @@ resultsBox().addEventListener("click", (ev) => {
       // Unfavoriting inside the Favorites view removes the card from it.
       renderFavsView();
     } else {
-      favBtn.classList.toggle("fav-on", nowFav);
-      favBtn.textContent = nowFav ? "♥" : "♡";
-      favBtn.setAttribute("aria-pressed", nowFav ? "true" : "false");
+      setFavButton(favBtn, nowFav);
     }
+    return;
+  }
+  const thumbAnchor = ev.target.closest("a.thumb");
+  if (thumbAnchor) {
+    // Left-click (or keyboard Enter) on the image opens the viewer in
+    // the page instead of a new tab. Middle-click still opens the full
+    // image (auxclick, not click), and the anchor's href stays the full
+    // URL for right-click / copy-link. The heart, Retry and tag buttons
+    // sit outside the anchor and are handled above, so they never land
+    // here. The placeholder has pointer-events:none, so a click on a
+    // failed card's image area reaches the anchor too — the viewer
+    // shows the error note for it.
+    ev.preventDefault();
+    openLightbox(thumbAnchor.closest(".card"));
     return;
   }
   if (ev.target.closest('[data-action="clear-ratio"]')) {
@@ -3679,3 +3861,62 @@ resultsBox().addEventListener("click", (ev) => {
 loadSettings();
 const idleResultsHtml = resultsBox().innerHTML;
 updateFavsToggle();
+
+// Viewer controls (round 15): X / backdrop close, the heart toggles the
+// favorite (and syncs the card's heart behind it), a tag chip closes
+// the viewer and searches the tag. Esc is a document keydown below —
+// it only acts while the viewer is open.
+const lightboxEl = staticEl("lightbox");
+if (lightboxEl) {
+  lightboxEl.addEventListener("click", (ev) => {
+    if (ev.target.closest('[data-action="close-lightbox"]')) { closeLightbox(); return; }
+    const favBtn = ev.target.closest('[data-action="toggle-fav"]');
+    if (favBtn) {
+      const item = renderedByPage.get(favBtn.dataset.page);
+      if (!item) return;
+      const nowFav = toggleFav(item);
+      if (favsView) {
+        // Unfavoriting inside the Favorites view removes the card from
+        // it — the viewer was showing a card that is gone, so close it.
+        renderFavsView();
+        closeLightbox();
+      } else {
+        setFavButton(favBtn, nowFav);
+        const cardFav = lightboxCard && lightboxCard.querySelector('[data-action="toggle-fav"]');
+        setFavButton(cardFav, nowFav);
+      }
+      return;
+    }
+    const tagBtn = ev.target.closest('[data-action="search-tag"]');
+    if (tagBtn) {
+      const tag = tagBtn.dataset.tag || "";
+      if (!tag) return;
+      closeLightbox();
+      staticEl("query").value = tag;
+      $("#search-form").requestSubmit();
+      return;
+    }
+  });
+}
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && lightboxItem) closeLightbox();
+  // Tab must stay inside the viewer while it's open (round 15 debugger):
+  // the dialog is modal (aria-modal), but without a trap a keyboard user
+  // tabs straight out of it into the page behind — and could then
+  // re-open the viewer from a card while it's already open. Wrap Tab at
+  // both ends, and pull focus back in if it somehow got outside.
+  if (ev.key === "Tab" && lightboxItem) {
+    const els = lightboxEls();
+    const focusables = [els.source, els.full, els.fav];
+    if (!els.tags.hidden) focusables.push(...els.tags.querySelectorAll(".tag-chip"));
+    focusables.push(els.close);
+    const list = focusables.filter(Boolean);
+    if (!list.length) return;
+    const first = list[0];
+    const last = list[list.length - 1];
+    const active = document.activeElement;
+    if (!list.includes(active)) { ev.preventDefault(); first.focus(); return; }
+    if (ev.shiftKey && active === first) { ev.preventDefault(); last.focus(); }
+    else if (!ev.shiftKey && active === last) { ev.preventDefault(); first.focus(); }
+  }
+});

@@ -251,6 +251,29 @@
     </div>
   </main>
 
+  <!-- In-site viewer (round 15): clicking a card's image opens the
+       wallpaper here, as large as the viewport allows, instead of a new
+       tab. The tags, Source page and Full image links live here now —
+       the grid cards keep only the image, the heart and Retry, so
+       scrolling stays clean. X, Esc and the backdrop all close it. -->
+  <div id="lightbox" class="lightbox" hidden role="dialog" aria-modal="true" aria-label="Wallpaper viewer">
+    <div class="lightbox-backdrop" data-action="close-lightbox" aria-hidden="true"></div>
+    <figure class="lightbox-figure">
+      <img class="lightbox-img" alt="">
+      <p class="lightbox-error" hidden>Image couldn't load</p>
+      <figcaption class="lightbox-meta">
+        <div class="lightbox-caption"></div>
+        <div class="lightbox-links">
+          <a class="lightbox-source" target="_blank" rel="noopener">Source page ↗</a>
+          <a class="lightbox-full" target="_blank" rel="noopener">Full image ↗</a>
+          <button type="button" class="fav-btn lightbox-fav" data-action="toggle-fav" aria-pressed="false" aria-label="Save to favorites" title="Save to favorites">♡</button>
+        </div>
+        <div class="tags lightbox-tags"></div>
+      </figcaption>
+    </figure>
+    <button type="button" class="lightbox-close" data-action="close-lightbox" aria-label="Close viewer">✕</button>
+  </div>
+
   <footer>
     <p>Sources are searched live; nothing is cached or re-hosted. Respect each site&rsquo;s terms. Not affiliated with the listed sources.</p>
   </footer>

@@ -549,8 +549,8 @@ code {
      changed once between settle and +60s and then came back as the
      height vector completed. With the img absolute, the anchor has no
      in-flow children at all (badges and placeholder are absolute too;
-     the meta row sits outside the anchor, in the card), so its height
-     is purely the aspect-ratio in every state:
+     the heart and retry buttons sit outside the anchor, in the card), so
+     its height is purely the aspect-ratio in every state:
      unloaded, thumb, full, failed. The visual result is identical —
      the img already filled the anchor exactly via 100%/100% +
      object-fit: contain. */
@@ -622,35 +622,146 @@ code {
    is positioned, like .img-placeholder's. */
 .badge-full-failed { top: auto; bottom: 8px; left: 8px; }
 .badge-full-failed[hidden] { display: none; }
-/* Source / Full image / heart row: a solid dark bar at the bottom of the
-   image, shown only while hovering (or tabbing through) the card. No
-   gradient scrim — flat colour only. The image itself stays one big link
-   to the full image — left-clicking it opens the full image, buttons or
-   no buttons. */
-.card .meta {
+/* Favorite heart: a single small button in the card's bottom-right corner,
+   always visible — the tags and links moved into the viewer (round 15),
+   so the card keeps only this. It sits over the image (z-index 3, above
+   the placeholder's 1), so it still works on a failed card. The dark
+   background is rgba(0,0,0,.88), not the badges' .78: the filled heart's
+   pink glyph needs it to clear the 4.5:1 bar over a bright image (see U5).
+   No hover-reveal: the old .meta overlay is gone, so there is nothing to
+   reveal with — the heart is reachable on desktop and touch alike. */
+.card .fav-btn {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  right: 8px;
+  bottom: 8px;
   z-index: 3;
-  padding: 8px 10px;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: rgba(0, 0, 0, .88);
+  color: var(--muted);
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, color .15s ease, transform .1s ease;
+}
+.card .fav-btn:hover { border-color: var(--accent); color: #fff; }
+.card .fav-btn:active { transform: scale(.92); }
+.card .fav-btn.fav-on {
+  /* #ff7080, not the #ff5d73 the tint uses: the glyph must clear WCAG AA
+     4.5:1 even over a bright image behind the button (worst case ~5.2:1
+     over the .88 scrim; #ff5d73 was 4.18:1 there). Border and tint keep
+     the deeper hue. */
+  color: #ff7080;
+  border-color: rgba(255, 93, 115, .55);
+  background: rgba(255, 93, 115, .12);
+}
+/* Retry button: bottom-center of the card, hidden until a card fails (see
+   markImageFailed in app.js). Bottom-center so it never collides with the
+   "Preview only" badge (bottom-left) or the heart (bottom-right); both
+   can be visible at once on a Preview-only card. Same sizing language as
+   the heart button. */
+.card .img-retry {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 7px 12px;
+  border-radius: 3px;
+  border: 1px solid var(--border-strong);
+  background: rgba(0, 0, 0, .88);
+  color: var(--text);
+  font: inherit;
+  font-size: .84rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease;
+}
+.card .img-retry:hover { border-color: var(--accent); }
+/* Tag chips in the viewer (round 15): same look as the old card chips,
+   now under the viewer's links row. They wrap; at most 6 chips, the rest
+   collapse into a muted "+N" count. Every chip is escaped (escapeHtml) —
+   a tag is untrusted API text, never markup. */
+.lightbox .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.lightbox .tag-chip {
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-soft);
+  color: var(--muted);
+  font: inherit;
+  font-size: .78rem;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: border-color .15s ease, color .15s ease, background .15s ease;
+}
+.lightbox .tag-chip:hover { border-color: var(--accent); color: #fff; background: var(--accent-soft); }
+/* ---------- In-site viewer (round 15) ---------- */
+/* The viewer is a fixed overlay over the whole page: a solid dark
+   backdrop (no gradient — the design language is zero gradients), the
+   image as large as the viewport allows, and the links/tags below it.
+   The image's max-height leaves room for the meta row and the close
+   button; when a tall image meets a long meta (many tags) the figure
+   can still exceed the viewport, so the overlay scrolls (see below)
+   instead of clipping. */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  justify-content: center;
+  overflow-y: auto;
+}
+.lightbox[hidden] { display: none; }
+.lightbox-backdrop {
+  /* Fixed, not absolute: it must keep covering the viewport when the
+     overlay scrolls for a tall figure (an absolute backdrop would
+     scroll away with the content). */
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .88);
+}
+.lightbox-figure {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 96vw;
+  max-height: 96vh;
+  /* margin:auto centers the figure when it fits — and, unlike
+     align-items:center on the overlay, keeps its top reachable when
+     the overlay scrolls (the classic flex-centering clip). */
+  margin: auto;
+}
+.lightbox-img {
+  max-width: 96vw;
+  max-height: calc(96vh - 130px);
+  object-fit: contain;
+  background: #000;
+  border-radius: var(--radius);
+}
+.lightbox-error {
+  max-width: 96vw;
+  margin: 0;
+  padding: 24px;
+  color: var(--muted);
+  font-size: .95rem;
+  text-align: center;
+}
+.lightbox-meta { width: 100%; margin-top: 10px; }
+.lightbox-caption {
+  color: var(--muted);
   font-size: .85rem;
-  background: rgba(12, 12, 12, .88);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .15s ease;
+  margin-bottom: 8px;
 }
-.card .meta a, .card .meta button { pointer-events: none; }
-.card:hover .meta, .card:focus-within .meta { opacity: 1; }
-.card:hover .meta a, .card:hover .meta button,
-.card:focus-within .meta a, .card:focus-within .meta button { pointer-events: auto; }
-@media (hover: none) {
-  /* Touch devices have no hover to reveal the row with. */
-  .card .meta { opacity: 1; }
-  .card .meta a, .card .meta button { pointer-events: auto; }
-}
-.card .links { display: flex; gap: 8px; }
-.card .links a {
+.lightbox-links { display: flex; gap: 8px; flex-wrap: wrap; }
+.lightbox-links a {
   flex: 1;
   text-align: center;
   padding: 7px 10px;
@@ -663,15 +774,15 @@ code {
   text-decoration: none;
   transition: border-color .15s ease, background .15s ease;
 }
-.card .links a:hover { border-color: var(--accent); background: var(--accent-soft); }
-/* Heart / favorite button in the card's link row. */
-.card .links .fav-btn {
+.lightbox-links a:hover { border-color: var(--accent); background: var(--accent-soft); }
+/* Heart in the viewer: same button as the card's, same pink when on. */
+.lightbox .fav-btn {
   flex: 0 0 auto;
   min-width: 40px;
   padding: 7px 9px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
-  background: var(--bg-soft);
+  background: rgba(0, 0, 0, .88);
   color: var(--muted);
   font: inherit;
   font-size: 1rem;
@@ -680,41 +791,38 @@ code {
   cursor: pointer;
   transition: border-color .15s ease, background .15s ease, color .15s ease, transform .1s ease;
 }
-.card .links .fav-btn:hover { border-color: var(--accent); color: #fff; }
-.card .links .fav-btn:active { transform: scale(.92); }
-.card .links .fav-btn.fav-on {
-  /* #ff7080, not the #ff5d73 the tint uses: the glyph must clear WCAG AA
-     4.5:1 even over a bright image behind the meta bar (worst case
-     4.66:1; #ff5d73 was 4.18:1 there). Border and tint keep the deeper hue. */
+.lightbox .fav-btn:hover { border-color: var(--accent); color: #fff; }
+.lightbox .fav-btn:active { transform: scale(.92); }
+.lightbox .fav-btn.fav-on {
   color: #ff7080;
   border-color: rgba(255, 93, 115, .55);
   background: rgba(255, 93, 115, .12);
 }
-/* Tag chips under the links row, inside the meta overlay: revealed with
-   the action row on hover, always visible on touch (the @media
-   (hover: none) rule above covers every button in .meta). Small and
-   muted so a row of them reads as metadata, not navigation; the gold
-   border on hover is the same cue the links use. */
-.card .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.card .tag-chip {
-  padding: 2px 7px;
+/* Close button: top-right, always visible, a 44px touch target.
+   Fixed, not absolute, so it stays put when the overlay scrolls for
+   a tall figure (an absolute button would scroll away with it). */
+.lightbox-close {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
-  background: var(--bg-soft);
-  color: var(--muted);
+  background: rgba(0, 0, 0, .88);
+  color: var(--text);
   font: inherit;
-  font-size: .78rem;
-  line-height: 1.5;
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1;
   cursor: pointer;
-  transition: border-color .15s ease, color .15s ease, background .15s ease;
+  transition: border-color .15s ease, color .15s ease;
 }
-.card .tag-chip:hover { border-color: var(--accent); color: #fff; background: var(--accent-soft); }
-.card .tag-more {
-  padding: 2px 4px;
-  color: var(--muted);
-  font-size: .78rem;
-  line-height: 1.5;
-}
+.lightbox-close:hover { border-color: var(--accent); color: #fff; }
+/* While the viewer is open the page behind it must not scroll. */
+body.lightbox-open { overflow: hidden; }
 /* Favorites toggle in the View group. */
 .favs-toggle {
   padding: 6px 12px;
@@ -859,23 +967,15 @@ footer p { margin: 0; max-width: 80ch; }
 @media (max-width: 900px) {
   .results { columns: 240px; column-gap: 8px; }
   .card, .skeleton { margin-bottom: 8px; }
-  /* 240px columns are the narrowest the card action row ever gets, and
-     the two links + heart + gaps + meta padding barely fit: at the base
-     sizes "Full image ↗" needs ~90px but gets 81px, so it wrapped to two
-     lines (uneven with its one-line neighbour) on ~740–830px viewports.
-     Compact the row here so both links fit one line down to ~265px cards;
-     at a true 240px card both links wrap symmetrically instead. */
-  .card .meta { padding: 8px; }
-  .card .links { gap: 6px; }
-  .card .links a { padding: 7px 8px; font-size: .8rem; }
-  .card .links .fav-btn { min-width: 34px; padding: 7px 8px; }
+  /* The card keeps only the corner heart at this width (round 15) — a
+     fixed 36px button, so there is no action row left to compact. The
+     viewer's links row wraps on its own (see .lightbox-links). */
+  .card .fav-btn { min-width: 34px; min-height: 34px; padding: 6px 7px; }
 }
 @media (max-width: 600px) {
-  /* One column, not two: at a ~180px card the Source / Full image / heart
-     row (minimum ~180px of buttons + gaps) is wider than the card, so
-     .card's overflow:hidden clips the heart button on every card — and on
-     touch the row is always visible, so every card shows it clipped. A
-     single full-width column gives the row room. */
+  /* One column, not two: a two-column grid at phone width makes every
+     card ~180px wide, and the corner heart + badges crowd each other.
+     A single full-width column gives each card room. */
   .results { columns: 300px; column-gap: 10px; }
   .card, .skeleton { margin-bottom: 10px; }
   .chip { padding: 6px 9px; font-size: .84rem; }
@@ -1323,19 +1423,3 @@ main:has(#favs-toggle.active) #tab-search.active {
 /* Second line of the failure placeholder: why it failed (timeout vs
    blocked/missing) — see markImageFailed in app.js. */
 .img-fail-reason { font-size: .8rem; opacity: .85; }
-/* Retry button in the card's link row: hidden until a card fails (see
-   markImageFailed in app.js), same sizing language as the heart button. */
-.card .links .img-retry {
-  flex: 0 0 auto;
-  padding: 7px 12px;
-  border-radius: 3px;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-soft);
-  color: var(--text);
-  font: inherit;
-  font-size: .84rem;
-  font-weight: 650;
-  cursor: pointer;
-  transition: border-color .15s ease, background .15s ease;
-}
-.card .links .img-retry:hover { border-color: var(--accent); background: var(--accent-soft); }

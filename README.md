@@ -104,8 +104,8 @@ per-proxy errors.
   and the scraped sites drop below-filter matches silently, with no count —
   and the pill never says which kind a count is: both read the same
   ("N below WxH — lower the filter to see them").
-- **Show** — how many wallpapers load per search: **50**, **100** (default),
-  **150**, **200**, or **All**. The limit applies after merging, sorting and
+- **Show** — how many wallpapers load per search: **50**, **100**,
+  **150**, **200**, or **All** (default since v5.17). The limit applies after merging, sorting and
   the other filters, so it counts the wallpapers that would actually show —
   fewer cards means fewer thumbnails and fewer full-res probes. When it hides
   results the status line says how many ("N more — raise the limit to see
@@ -325,6 +325,75 @@ night, mountains, neon, abstract) runs that term as a normal search:
 back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
+
+## Changes in v5.19 (round 14 — the meter MB fall, 2026-11-16)
+
+- **The meter's MB no longer falls across Load more**: the v5.16
+  live test caught it dropping 161 MB → 144 MB while the loaded
+  count rose 100 → 149. Root cause: a card is marked loaded when
+  its probe succeeds — before the card's own image has loaded —
+  and a flaky proxy 429ing the second fetch made the error handler
+  strip the probe-verified card (bytes gone, count kept). The
+  display fetch now gets the same one retry the probe gets (the
+  src is cleared first so the same URL actually re-fetches); only
+  a second failure strips the card. A user Retry grants a fresh
+  retry. The meter still counts the grid total (round-11 design);
+  a card that fails twice genuinely can't display, so its bytes
+  leaving the meter is honest.
+- **Debugger pass (2 real bugs fixed)**: the retry re-fetched the
+  wrong URL on alternate-settled cards (it re-fetched the failed
+  full instead of the displaying alternate — the same meter-fall
+  class, surviving in the alternate case; it now retries the URL
+  that is actually displaying); and a detached image's error
+  corrupted live state (an in-flight fetch erroring after a
+  rebuild deleted the live card's page from `loadedPages` — the
+  error handler now ignores detached images).
+- **Optimizer pass (nothing left to take)**: the retry costs zero
+  on the happy path (the flag is never even written without an
+  error; no extra `Image` objects; the re-fetch is cache-served
+  when the probe already downloaded the URL). The deeper fix the
+  agent declined — waiting for the image `onload` before marking
+  loaded — was measured and judged correctly declined: it would
+  need a load-completion model plus a stuck-image timeout, and the
+  retry is needed in either design.
+- QA harness 634 checks (606 + 12 meter + 12 debugger + 4
+  optimizer), optimizer all green (the growing-vs-rebuild timing
+  check flakes in both directions in the shim — noise, green on
+  re-run, same class as rounds 9–13).
+
+## Changes in v5.18 (round 15 — in-site viewer, 2026-11-16)
+
+- **Click a wallpaper to view it inside the site**: the card's image
+  now opens a viewer (lightbox) instead of a new tab, showing the
+  image at max size with an X button, Esc to close, and backdrop
+  click to close. The viewer carries the tags, the Source page link,
+  the Full image link, and the favorite heart for that wallpaper.
+  The grid cards are clean now — no tags chips, no Source / Full
+  image links while scrolling; the heart stays on the card as a
+  lone corner button. Middle-click still opens the full image, and
+  the Full image link is still the true full URL, never a fallback.
+- **Debugger pass (5 real bugs fixed)**: Tab escaped the modal
+  (focus trap added, wraps at both ends); re-opening the viewer
+  clobbered the focus-return target (now captured on the first open
+  only); closing after an unfavorite in the Favorites view focused
+  a detached node (falls back to the Favorites toggle or the search
+  box); the viewer's "+N" tag overflow was dead (the viewer now
+  shows all stored tags, capped at 12); a tall figure clipped
+  instead of scrolling (overlay scrolls, backdrop and X stay
+  fixed).
+- **Optimizer pass (nothing left to take as an app change — the
+  viewer was the optimization)**: the lighter cards cut a 600-card
+  full rebuild from ~277ms to ~79ms in the shim (3.5×) and nodes
+  per card from 18 to 6 with tags. The viewer's preload of the
+  full URL shares the card's download (same cache key, one fetch);
+  opening on a huge file preloads the original, not the ~850px
+  sample. Round-2/12/13 claims re-verified; the counts walk is
+  ~48ms per 600-card drain in a real browser — a running counter
+  is still not worth the drift risk.
+- QA harness 606 checks (557 + 31 viewer + 11 debugger + 7
+  optimizer), optimizer all green. (Merge note: the round-13 BI3
+  guard still read the card's `.full-link` href, which the viewer
+  removed — it now reads the anchor's href, which is the full URL.)
 
 ## Changes in v5.17 (round 13 — Show defaults to All, 2026-11-16)
 
