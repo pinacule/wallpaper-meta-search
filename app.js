@@ -564,6 +564,35 @@ function formatQueryFor(source, q) {
   return q;
 }
 
+// Round 19: dedupe a source's items by page URL. A source must never
+// contribute the same post twice, whatever it returns — a cached page
+// served twice, a paging overlap, or the same post under two image URLs
+// (different `full` for the same `page` slips past the full-URL dedupe in
+// renderResults). The fetch layer was verified clean live 2026-11-18
+// (Danbooru trending page: 200 posts, 0 duplicate ids/file_urls;
+// Wallhaven toplist pages 1+2: 0 overlap), and no harness sequence
+// reproduces a visible duplicate — the live report's "same image 6x/10x"
+// matches the real pool's dimension groups instead (4 different Danbooru
+// images share 2894x4093, 9 different Wallhaven images share 3840x2160
+// in page 1), so this is defense in depth, not a fix for a live
+// duplicating layer. First occurrence wins; items without a page URL are
+// never dropped (they have nothing to key on). Array props the caller
+// reads (via / hidden / nextCursor / fallbackTag / empty) are carried
+// over so the pill and the pool agree.
+function dedupeItemsByPage(items) {
+  const seen = new Set();
+  const out = items.filter((r) => {
+    if (!r.page) return true;
+    if (seen.has(r.page)) return false;
+    seen.add(r.page);
+    return true;
+  });
+  for (const k of ["via", "hidden", "hiddenScope", "empty", "fallbackTag", "nextCursor"]) {
+    if (items[k] !== undefined) out[k] = items[k];
+  }
+  return out;
+}
+
 // Round 18: single-tag wildcard fallback. "minimal" is a free-text word,
 // not a tag — Danbooru has 0 posts tagged `minimal`, Safebooru 1 — but
 // `minimal*` matches `minimalism`, `minimalist_(arknights)`, ... (verified
@@ -1518,7 +1547,7 @@ async function loadMore() {
       const items = await SOURCES[name].more(q, v.cursors[name]);
       const m = minRes();
       const passing = items.filter((r) => passesMinRes(r, m));
-      return { name, items, passing, ok: true };
+      return { name, items, passing, ok: true, minRes: m };
     } catch (err) {
       return { name, err, ok: false };
     }
@@ -1529,16 +1558,22 @@ async function loadMore() {
   if (seq !== v.seq) { syncViewGlobals(v); updateLoadMoreButton(); return; }
   // Dedupe set for the merge below (built once, shared by all batches).
   const seenFull = new Set(v.results.map((r) => r.full));
+  const seenPages = new Set(v.results.map((r) => r.page).filter(Boolean));
   let addedFresh = false; // a new batch landed: the preload budget restarts for it (AW1)
   for (const b of batches) {
     if (!b.ok) continue; // failed source: pill and cursor stand, retry next click
     // Dedupe the batch against the fetched set (same by-full rule as
     // renderResults): a source re-serving a post from an earlier page
     // (page boundaries shift as new posts arrive) must not count twice
-    // in the pill or the pool.
-    const fresh = b.passing.filter((r) => !seenFull.has(r.full));
+    // in the pill or the pool. Same page under a different image URL is
+    // still the same post (round 19) — the page check covers it.
+    const fresh = b.passing.filter((r) => {
+      if (seenFull.has(r.full)) return false;
+      if (r.page && seenPages.has(r.page)) return false;
+      return true;
+    });
     if (fresh.length) addedFresh = true;
-    for (const r of fresh) seenFull.add(r.full);
+    for (const r of fresh) { seenFull.add(r.full); if (r.page) seenPages.add(r.page); }
     v.results.push(...fresh);
     // Advance the cursor (a null nextCursor means exhausted — drop the entry).
     if (b.items.nextCursor != null) v.cursors[b.name] = b.items.nextCursor;
@@ -1549,7 +1584,17 @@ async function loadMore() {
     // the via is the latest batch's.
     const st = v.sourceState[b.name] || { passing: 0, hidden: 0, via: "", empty: false };
     st.passing += fresh.length;
-    st.hidden += b.items.hidden || 0;
+    // Round 19 debugger: the batch's hidden count was computed by the
+    // adapter on the raw batch — the dedupe above may have dropped
+    // below-min-res copies, so a checked-scope count overstates what the
+    // batch contributed (probe: a more-batch re-serving one 800x600 page
+    // twice read "2 below" for 1 surviving hidden item). Recompute it on
+    // the deduped batch, with the same min-res the batch was filtered
+    // with. Exact ("db") counts are database-wide and stand as-is.
+    const batchHidden = b.items.hiddenScope === "checked"
+      ? dedupeItemsByPage(b.items).filter((r) => !passesMinRes(r, b.minRes)).length
+      : (b.items.hidden || 0);
+    st.hidden += batchHidden;
     st.via = b.items.via || st.via;
     st.empty = false;
     // A more-batch never sets fallbackTag itself (load more never
@@ -3594,9 +3639,18 @@ function setEmptyState(html) {
 
 function renderResults(results, reports, q) {
   const seen = new Set();
+  const seenPages = new Set();
   const uniq = results.filter((r) => {
     if (seen.has(r.full)) return false;
     seen.add(r.full);
+    // Same page under a different image URL is still the same post
+    // (round 19): it would otherwise slip past the full-URL dedupe
+    // above and render two cards for one page. Items without a page
+    // URL are never dropped — they have nothing to key on.
+    if (r.page) {
+      if (seenPages.has(r.page)) return false;
+      seenPages.add(r.page);
+    }
     return true;
   });
   const sorted = sortResults(uniq);
@@ -4060,10 +4114,18 @@ async function search(ev) {
   }
   await Promise.all(chosen.map(async (name) => {
     try {
-      const items = await SOURCES[name](q);
+      const items = dedupeItemsByPage(await SOURCES[name](q));
       // minRes read once per source, not once per item (the filter below
       // runs over up to 100 items per source).
       const m = minRes();
+      // Round 19 debugger: a checked-scope hidden count was computed by
+      // the adapter on the raw set — the dedupe above may have dropped
+      // below-min-res copies, so the carried count overstates the hidden
+      // items actually in the pool (probe: Safebooru returning one page
+      // twice, both copies 800x600, read "2 below" for 1 surviving item).
+      // Recompute it on the deduped set. Exact ("db") counts are
+      // database-wide and stay true regardless of which items were fetched.
+      if (items.hiddenScope === "checked") items.hidden = items.filter((r) => !passesMinRes(r, m)).length;
       const passing = items.filter((r) => passesMinRes(r, m));
       all.push(...passing);
       // Adapters report how many matches the min-resolution filter hid, so
@@ -4509,9 +4571,13 @@ async function loadTrending(force) {
   } else {
     await Promise.all(chosen.map(async (name) => {
       try {
-        const items = await SOURCES[name](null, { trending: true });
+        const items = dedupeItemsByPage(await SOURCES[name](null, { trending: true }));
         // minRes read once per source, not once per item (same as search()).
         const m = minRes();
+        // Round 19 debugger: same checked-scope hidden recompute as
+        // search() — the dedupe above may have dropped below-min-res
+        // copies the adapter counted.
+        if (items.hiddenScope === "checked") items.hidden = items.filter((r) => !passesMinRes(r, m)).length;
         const passing = items.filter((r) => passesMinRes(r, m));
         all.push(...passing);
         reports.push(sourceReport(name, items, passing));

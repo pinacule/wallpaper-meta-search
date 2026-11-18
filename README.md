@@ -326,7 +326,43 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.22 (round 18 — "why so little" + tag fallback, 2026-11-17)
+## Changes in v5.23 (round 19 — Trending "duplicates" + page-keyed dedupe, 2026-11-18)
+
+- **Trending "duplicates", investigated**: a live test reported the
+  same Danbooru image 6× and the same Wallhaven image 10× in the
+  Trending grid. No duplicating layer exists — the Danbooru
+  trending page returns 200 posts with 0 duplicate ids, the
+  Wallhaven toplist pages have 0 overlap, and no harness sequence
+  (double load, tab switches, two tabs with the same items)
+  reproduces a visible duplicate. The pool genuinely contains
+  different images sharing exact dimensions (4 Danbooru images at
+  2894×4093, 9 Wallhaven images at 3840×2160), which is what a
+  dimension-grouped count sees. A DOM-wide count would also
+  surface the by-design hidden copies across tabs.
+- **Defense in depth**: a source can never inflate the grid again
+  — new `dedupeItemsByPage` drops a second item with the same
+  page URL (first wins; page-less items never dropped) at the
+  search fetch path, the Trending fetch path, and the Load more
+  merge, plus a render guard in `renderResults` that also covers
+  same-page/different-full, which the old full-URL dedupe missed.
+  No-ops for unique data; counts for unique items unchanged.
+- **Debugger caught 2 real bugs in the dedupe itself**: the
+  fetch-path dedupe runs before the min-res filter, but the
+  adapters count their checked-scope "below min-res" figures on
+  the raw set — dropping a below-min-res copy left the pill
+  overstating the hidden items actually in the pool (a batch
+  re-serving one 800×600 page twice read "2 below" for 1
+  surviving item). Both the search/Trending path and the Load
+  more merge now recompute the checked-scope count on the
+  deduped set; database-wide ("db") counts stand as-is. The
+  optimizer found nothing left to take — the dedupe costs
+  0.054 ms/call at 600 cards, and the four sites guard
+  different boundaries (ingest, cross-batch, display,
+  Favorites), so none is redundant.
+- QA harness 781 checks (761 + 9 dedupe + 7 debugger + 4
+  optimizer), optimizer all green.
+
+## Changes in v5.22 (round 18 — "why so little" + tag fallback, 2026-11-17 — pushed as 00bec5c2)
 
 - **Thin results on plain words, explained**: a search for
   "minimal" returned 185 results because "minimal" is not a tag
@@ -348,7 +384,7 @@ the ↻ Refresh button forces a fresh load.
 - QA harness 761 checks (737 + 6 "why so little" + 18 fallback),
   optimizer all green.
 
-## Changes in v5.21 (round 17 — jump fix, in-app tabs, UI polish, viewer click-to-close, 2026-11-17)
+## Changes in v5.21 (round 17 — jump fix, in-app tabs, UI polish, viewer click-to-close, 2026-11-17 — pushed as 00bec5c2)
 
 - **The jumping bug, fixed for real this time**: the status pills
   row was under-reserved for the long pills a local run writes —
