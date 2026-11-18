@@ -532,7 +532,23 @@ const EXTRA_SOURCES = {
       }
     }
     const items = dedupe(out);
-    if (!items.length) throw new Error("no results parsed from Zerochan (it may be showing its browser check)");
+    if (!items.length) {
+      // Two different zeroes, and the old message blamed the wrong one:
+      // the browser-check challenge page is 419 bytes, so fetchHtml's
+      // <500 guard throws "empty response" before this line is ever
+      // reached — the only 0-item page that gets HERE is a real page
+      // with no results, e.g. Zerochan's 404 "Not found" page for a tag
+      // that doesn't exist ("minimal": verified live 2026-11-17 — the
+      // local proxy returns HTTP 404, <h2>Not found</h2>, 0 items, twice
+      // running, while a real tag like Nekomimi returns 90 items through
+      // the same code). A proxy can still serve the challenge page with
+      // HTTP 200 and enough padding to pass the length guard, so check
+      // for it explicitly before blaming the tag.
+      if (/Checking browser/i.test(html)) {
+        throw new Error("no results parsed from Zerochan — it is showing its browser check");
+      }
+      throw new Error("no results parsed from Zerochan — no matching tag or empty results");
+    }
     const capped = cap80(items);
     capped.nextCursor = nextCursor;
     capped.exhausted = !nextCursor;

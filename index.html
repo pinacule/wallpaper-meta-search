@@ -21,6 +21,15 @@
   </header>
 
   <main>
+    <!-- Session tabs (round 17): one tab per search / trending view, so a
+         slow search keeps loading in the background while the user looks
+         at Trending or another search. The tab buttons are rendered by
+         app.js into #session-tabs; the + button opens a fresh tab.
+         Favorites stays out of tabs (it is a saved-items view, not a
+         loading view) and keeps its own toggle. -->
+    <div class="session-tabs" id="session-tabs" role="tablist" aria-label="Open tabs">
+      <button type="button" id="session-tab-new" class="session-tab session-tab-new" title="New tab" aria-label="New tab">+</button>
+    </div>
     <section class="hero">
       <form id="search-form" role="search">
         <div class="search-box">

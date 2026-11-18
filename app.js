@@ -77,6 +77,75 @@ function setStatusReserve(sourceCount) {
   // A search owns the status row now: drop Trending's own reserve (see
   // loadTrending) so the two classes never stack.
   statusBox().classList.remove("status-reserved-trending");
+  // Round 17: the inline reserve (stored measured height, see
+  // applyStoredStatusHeight) belongs to a search only — a view switch or
+  // a fresh search must not inherit a stale one, or Favorites/Trending
+  // would carry a search's dead space. search() re-applies it right
+  // after this call.
+  statusBox().style.minHeight = "";
+}
+// Stored status-row reserve (round 17): the fixed CSS rungs can't cover
+// the pills' real length exactly — they are estimates, right to about a
+// row at their edges (see style.css). So the reserve is MEASURED: after a
+// search render, the pills' true content height is stored (keyed by
+// viewport width); the next search reserves exactly that before the
+// fetch, so the row is already at its final height when the pills land.
+// The height self-heals — a filter change leaves at most one search
+// with dead space (or a ≤1-row residual jump), then the new height is
+// stored. The CSS rungs stay as the fallback (first search ever, or a
+// width change past the tolerance below).
+// The key is versioned (round 17 debugger): v5.21 shortened the pills,
+// so a height stored by v5.20 or earlier was measured for the LONG pills
+// (up to 531px at phone width) and would reserve ~500px of dead space
+// under the short pills on the first search after the update. The old
+// key is simply never read again — the first search falls back to the
+// (correct-for-short-pills) rung, then stores the true short height.
+const STATUS_H_KEY = "wms.statusH2";
+const STATUS_ROW_MARGIN_PX = 38; // one pill row (29.2px line + 8px gap),
+  // rounded up: absorbs digit growth in the counts (100 → 1,000) and one
+  // extra pill row (a ratio/limit pill appearing) between searches.
+const STATUS_H_WIDTH_TOL_PX = 150; // stored height only applies near the
+  // width it was measured at — packing changes by ~1 row per 150px.
+function statusViewportWidth() {
+  return (typeof window !== "undefined" && typeof window.innerWidth === "number") ? window.innerWidth : 0;
+}
+function storeStatusHeight() {
+  const box = statusBox();
+  if (!box) return;
+  const vw = statusViewportWidth();
+  if (!vw) return; // no viewport width (harness) — nothing to key on
+  let h = 0;
+  try {
+    // Measure the pills' TRUE content height: drop the reserve (class +
+    // inline) so offsetHeight isn't the reserve itself, read, restore.
+    // Synchronous — no paint happens mid-block, so nothing flickers.
+    const hadClass = box.classList.contains("status-reserved");
+    const prevInline = box.style.minHeight || "";
+    box.classList.remove("status-reserved");
+    box.style.minHeight = "";
+    h = box.offsetHeight || 0;
+    if (hadClass) box.classList.add("status-reserved");
+    box.style.minHeight = prevInline;
+  } catch { return; }
+  if (!(h > 0)) return;
+  try { localStorage.setItem(STATUS_H_KEY, JSON.stringify({ h: Math.round(h), w: vw })); } catch { /* storage unavailable — the CSS rung stands */ }
+}
+function applyStoredStatusHeight() {
+  const box = statusBox();
+  if (!box) return;
+  let stored = null;
+  try {
+    const raw = localStorage.getItem(STATUS_H_KEY);
+    stored = raw ? JSON.parse(raw) : null;
+  } catch { stored = null; }
+  const vw = statusViewportWidth();
+  if (!stored || typeof stored.h !== "number" || !(stored.h > 0)
+      || typeof stored.w !== "number" || !vw
+      || Math.abs(vw - stored.w) > STATUS_H_WIDTH_TOL_PX) {
+    box.style.minHeight = "";
+    return;
+  }
+  box.style.minHeight = `${Math.round(stored.h) + STATUS_ROW_MARGIN_PX}px`;
 }
 // Every other static control, looked up once per page lifetime instead of
 // once per call: loadSettings, saveSettings and the view functions used to
@@ -495,6 +564,39 @@ function formatQueryFor(source, q) {
   return q;
 }
 
+// Round 18: single-tag wildcard fallback. "minimal" is a free-text word,
+// not a tag — Danbooru has 0 posts tagged `minimal`, Safebooru 1 — but
+// `minimal*` matches `minimalism`, `minimalist_(arknights)`, ... (verified
+// live 2026-11-17: Danbooru posts.json?tags=minimal* returns 107 posts
+// incl. `minimalism`; Safebooru dapi tags=minimal* returns posts). So when
+// a single plain tag returns a clean 0, the adapter retries once with
+// `tag*`. Single-tag only: a multi-tag 0 is a genuinely empty intersection,
+// and metatags ("rating:…", "order:…"), exclusions ("-…"), OR-groups ("~…")
+// and a wildcard the user already typed are exact as given. Errors throw
+// out of the adapter, so a 0 that reaches the retry is a genuine empty
+// result, never a masked failure. Load more never retries — it follows the
+// recorded fallback (below) or the exact tags; a 0 there means the tag is
+// exhausted, not that a different tag should be tried.
+// The fallback is recorded per (source, query, purity, min-res) so a later
+// load-more goes straight to the wildcard pages (and the stashed pid 1)
+// instead of wasting an exact-tag fetch that returns 0 again. Keyed richly
+// enough that two tabs with the same word but different filters can't
+// cross-contaminate; re-decided on every initial search, so a stale entry
+// can't outlive its query.
+const booruFallbackTags = new Map(); // key -> wildcard base tags
+function booruFallbackKey(source, q) {
+  const m = minRes();
+  return `${source}|${String(q).trim().toLowerCase()}|${purity()}|${m ? `${m.w}x${m.h}` : "any"}`;
+}
+function isSinglePlainTag(q) {
+  const t = String(q).trim().toLowerCase();
+  if (!t || /[\s,]/.test(t)) return false;
+  return /^[a-z0-9_]+$/.test(formatBooruTags(t));
+}
+function wildcardTagFor(q) {
+  return `${formatBooruTags(String(q).trim().toLowerCase())}*`;
+}
+
 // Prefer the original file for `full` (a wallpaper app wants full res, not
 // the ~850px sample). Fall back to the sample for videos/archives.
 function pickBooruFile(fileUrl, sampleUrl) {
@@ -551,9 +653,15 @@ const SOURCES = {
     // width:/height: server-side filter still applies — trending is not
     // an excuse to show phone art on a PC filter.
     const trending = !!opts.trending;
+    // Wildcard fallback (round 18): the initial search's fallback, if it
+    // fell back — else the exact tags. A recursive retry passes
+    // _fallbackTags; load more reads the recorded decision via the map.
+    const fbKey = booruFallbackKey("danbooru", q);
+    const fbTags = opts._fallbackTags || booruFallbackTags.get(fbKey);
+    const usedWildcard = !trending && !!fbTags;
     const tags = trending
       ? `order:rank date:${new Date().toISOString().slice(0, 10)}`
-      : formatQueryFor("danbooru", q);
+      : (fbTags || formatQueryFor("danbooru", q));
     const m = minRes();
     const p = purity();
     // Safe: rating:safe only. Mixed: safe OR questionable (comma = OR inside
@@ -603,6 +711,11 @@ const SOURCES = {
     // (see nextCursor below). A more-batch takes the whole page (up to
     // 200 posts), not the 100 target: the page is the natural batch, and
     // the render cap (not the fetch) decides what shows.
+    // A fresh initial search re-decides the fallback: clear any stale
+    // entry from an earlier search with the same word, so a non-fallback
+    // result can't leave load-more pointing at wildcard pages. (A
+    // recursive retry skips this — it just set the entry.)
+    if (!trending && !opts.more && !opts._fallbackTags) booruFallbackTags.delete(fbKey);
     const startPage = opts.startPage || 1;
     const pageCount = opts.maxPages || BOORU_MAX_PAGES;
     const target = opts.more ? BOORU_PAGE_SIZE : BOORU_TARGET;
@@ -664,6 +777,22 @@ const SOURCES = {
       if (data.length < BOORU_PAGE_SIZE) { lastPageShort = true; break; } // last page
       if (out.length < target) await sleep(BOORU_PAGE_DELAY_MS);
     }
+    // Single-tag wildcard fallback (round 18): a clean 0 for one plain
+    // tag retries once with `tag*` — the exact search above already ran,
+    // so this costs nothing when results exist. The retry is a full
+    // initial fetch with the wildcard tags (same paging, same filters);
+    // its array carries fallbackTag so the pill can say so. Checked
+    // before the counts await: the exact tag's hidden count is useless
+    // once the search falls back (the retry computes its own). Load more
+    // never reaches this (gated on !opts.more) — it follows the recorded
+    // fallback via fbTags above.
+    if (out.length === 0 && !trending && !opts.more && !usedWildcard && isSinglePlainTag(q)) {
+      const wild = wildcardTagFor(q);
+      booruFallbackTags.set(fbKey, wild);
+      const retry = await SOURCES.danbooru(q, { ...opts, _fallbackTags: wild });
+      retry.fallbackTag = wild;
+      return retry;
+    }
     out.hidden = hiddenPromise ? await hiddenPromise : 0;
     out.hiddenScope = "db"; // exact count across the whole database
     out.via = via;
@@ -685,7 +814,12 @@ const SOURCES = {
     // instead of giving up after the first 40 newest posts.
     // (minRes is read once here, not per item — the select can't usefully
     // change mid-fetch, and search() re-filters with the current value.)
-    const tags = formatQueryFor("safebooru", q);
+    // Wildcard fallback (round 18): same shape as Danbooru — the recorded
+    // fallback tags if the initial search fell back, else the exact tags.
+    const fbKey = booruFallbackKey("safebooru", q);
+    const fbTags = opts._fallbackTags || booruFallbackTags.get(fbKey);
+    const usedWildcard = !!fbTags;
+    const tags = fbTags || formatQueryFor("safebooru", q);
     const m = minRes();
     const out = [];
     let examined = 0;
@@ -793,6 +927,11 @@ const SOURCES = {
     // A new initial fetch invalidates any stashed page from an earlier
     // search (a rejected pid 1 must not leave an old page behind).
     booruPageStash.delete("safebooru");
+    // And re-decides the fallback (round 18): clear any stale entry from
+    // an earlier search with the same word, so a non-fallback result
+    // can't leave load-more pointing at wildcard pages. A recursive
+    // retry skips this — it just set the entry.
+    if (!opts._fallbackTags) booruFallbackTags.delete(fbKey);
     const [p0, p1] = await Promise.allSettled([fetchPage(0), fetchPage(1)]);
     if (p0.status === "rejected") throw p0.reason;
     via = p0.value.via;
@@ -831,6 +970,19 @@ const SOURCES = {
         break;
       }
     }
+    // Single-tag wildcard fallback (round 18): a clean 0 for one plain
+    // tag retries once with `tag*` — a full initial fetch with the
+    // wildcard tags (same concurrent pids 0+1, same paging loop, same
+    // stash). Its array carries fallbackTag so the pill can say so.
+    // Load more never reaches this (it returns from the more-branch
+    // above) — it follows the recorded fallback via fbTags instead.
+    if (out.length === 0 && !usedWildcard && isSinglePlainTag(q)) {
+      const wild = wildcardTagFor(q);
+      booruFallbackTags.set(fbKey, wild);
+      const retry = await SOURCES.safebooru(q, { ...opts, _fallbackTags: wild });
+      retry.fallbackTag = wild;
+      return retry;
+    }
     out.hidden = hidden;
     out.hiddenScope = "checked"; // only among the pages actually fetched
     out.examined = examined;
@@ -861,7 +1013,15 @@ const SOURCES = {
     const { key, userId } = gelbooruCreds();
     if (!key || !userId) throw new Error("needs a Gelbooru API key — paste one in Settings");
     const p = purity();
-    const tags = formatQueryFor("gelbooru", q)
+    // Wildcard fallback (round 18): same shape as Safebooru — the
+    // recorded fallback tags if the initial search fell back, else the
+    // exact tags. The rating suffix is appended after, so the stash
+    // fingerprint (tags incl. purity) stays consistent between the
+    // initial fetch and load more.
+    const fbKey = booruFallbackKey("gelbooru", q);
+    const fbTags = opts._fallbackTags || booruFallbackTags.get(fbKey);
+    const usedWildcard = !!fbTags;
+    const tags = (fbTags || formatQueryFor("gelbooru", q))
       + (p === "safe" ? " rating:safe" : p === "mixed" ? " rating:safe,questionable" : " rating:explicit");
     const m = minRes();
     const out = [];
@@ -945,6 +1105,9 @@ const SOURCES = {
     // A new initial fetch invalidates any stashed page from an earlier
     // search (a rejected pid 1 must not leave an old page behind).
     booruPageStash.delete("gelbooru");
+    // And re-decides the fallback (round 18): same stale-entry clear as
+    // Safebooru. A recursive retry skips this — it just set the entry.
+    if (!opts._fallbackTags) booruFallbackTags.delete(fbKey);
     const [p0, p1] = await Promise.allSettled([fetchPage(0), fetchPage(1)]);
     if (p0.status === "rejected") throw p0.reason;
     via = p0.value.via;
@@ -979,6 +1142,17 @@ const SOURCES = {
       } catch {
         break;
       }
+    }
+    // Single-tag wildcard fallback (round 18): same as Safebooru — a
+    // clean 0 for one plain tag retries once with `tag*`, carrying
+    // fallbackTag so the pill can say so. Load more never reaches this
+    // (it returns from the more-branch above).
+    if (out.length === 0 && !usedWildcard && isSinglePlainTag(q)) {
+      const wild = wildcardTagFor(q);
+      booruFallbackTags.set(fbKey, wild);
+      const retry = await SOURCES.gelbooru(q, { ...opts, _fallbackTags: wild });
+      retry.fallbackTag = wild;
+      return retry;
     }
     out.hidden = hidden;
     out.hiddenScope = "checked"; // only among the pages actually fetched
@@ -1325,17 +1499,23 @@ async function loadMore() {
   // guard), or a load already in flight (the button disables itself, but
   // a keyboard or programmatic double-click must not double-fetch).
   if (moreLoading || searchLoading || favsView || trendingView || !lastReports.length) return;
-  const names = Object.keys(lastCursors).filter((n) => typeof SOURCES[n]?.more === "function");
+  // The load runs in the ACTIVE tab's search view (round 17): capture it
+  // now — the fetch completes later, possibly after the user switched
+  // tabs, and the results must land in THIS view, never the active one.
+  const v = activeView();
+  const names = Object.keys(v.cursors).filter((n) => typeof SOURCES[n]?.more === "function");
   // Nothing left to fetch AND nothing left to reveal: the button should
   // already be disabled — bail out rather than bumping the cap for nothing.
-  if (!names.length && lastLimitHidden <= 0) return;
-  moreLoading = true;
+  if (!names.length && v.lastLimitHidden <= 0) return;
+  v.moreLoading = true;
+  syncViewGlobals(v);
   updateLoadMoreButton();
   const seq = ++viewSeq; // a new search during the fetch cancels this load
-  const q = lastQuery;
+  v.seq = seq;
+  const q = v.query;
   const batches = await Promise.all(names.map(async (name) => {
     try {
-      const items = await SOURCES[name].more(q, lastCursors[name]);
+      const items = await SOURCES[name].more(q, v.cursors[name]);
       const m = minRes();
       const passing = items.filter((r) => passesMinRes(r, m));
       return { name, items, passing, ok: true };
@@ -1343,12 +1523,12 @@ async function loadMore() {
       return { name, err, ok: false };
     }
   }));
-  moreLoading = false;
+  v.moreLoading = false;
   // A newer search started while this load was in flight: drop the result
   // (its cursors belong to the old session — search() reset them).
-  if (seq !== viewSeq) { updateLoadMoreButton(); return; }
+  if (seq !== v.seq) { syncViewGlobals(v); updateLoadMoreButton(); return; }
   // Dedupe set for the merge below (built once, shared by all batches).
-  const seenFull = new Set(lastResults.map((r) => r.full));
+  const seenFull = new Set(v.results.map((r) => r.full));
   let addedFresh = false; // a new batch landed: the preload budget restarts for it (AW1)
   for (const b of batches) {
     if (!b.ok) continue; // failed source: pill and cursor stand, retry next click
@@ -1359,23 +1539,27 @@ async function loadMore() {
     const fresh = b.passing.filter((r) => !seenFull.has(r.full));
     if (fresh.length) addedFresh = true;
     for (const r of fresh) seenFull.add(r.full);
-    lastResults.push(...fresh);
+    v.results.push(...fresh);
     // Advance the cursor (a null nextCursor means exhausted — drop the entry).
-    if (b.items.nextCursor != null) lastCursors[b.name] = b.items.nextCursor;
-    else delete lastCursors[b.name];
+    if (b.items.nextCursor != null) v.cursors[b.name] = b.items.nextCursor;
+    else delete v.cursors[b.name];
     // Rebuild this source's pill from the cumulative totals: the hidden
     // count adds across batches (Safebooru counts among fetched pages;
     // Danbooru's batch hidden is 0, so its exact DB count stands), and
     // the via is the latest batch's.
-    const st = lastSourceState[b.name] || { passing: 0, hidden: 0, via: "", empty: false };
+    const st = v.sourceState[b.name] || { passing: 0, hidden: 0, via: "", empty: false };
     st.passing += fresh.length;
     st.hidden += b.items.hidden || 0;
     st.via = b.items.via || st.via;
     st.empty = false;
-    lastSourceState[b.name] = st;
-    const idx = lastReports.findIndex((r) => r[0] === b.name);
+    // A more-batch never sets fallbackTag itself (load more never
+    // retries — round 18) — keep the initial search's value so the pill
+    // keeps saying "via minimal*" after the rebuild below.
+    st.fallbackTag = b.items.fallbackTag || st.fallbackTag || null;
+    v.sourceState[b.name] = st;
+    const idx = v.reports.findIndex((r) => r[0] === b.name);
     if (idx >= 0) {
-      lastReports[idx] = sourceReport(b.name, { hidden: st.hidden, hiddenScope: st.hiddenScope, via: st.via, empty: st.empty }, { length: st.passing });
+      v.reports[idx] = sourceReport(b.name, { hidden: st.hidden, hiddenScope: st.hiddenScope, via: st.via, empty: st.empty, fallbackTag: st.fallbackTag }, { length: st.passing });
     }
   }
   // A new batch landed: its preload budget starts here (AW1). Without
@@ -1385,7 +1569,7 @@ async function loadMore() {
   // more would appear to do nothing. The session counters are untouched
   // (AN5); only the batch base moves, and only when the batch actually
   // added cards — an all-dupe/failed click leaves the budget alone.
-  if (addedFresh) resetPreloadBatch();
+  if (addedFresh) resetPreloadBatch(v);
   // Only raise the render cap when a cap is actually in force (round 13).
   // At All (limit 0) the cap never constrains anything — effLimit ignores
   // extraLimit there — so an unconditional bump is dead state that LEAKS:
@@ -1394,8 +1578,13 @@ async function loadMore() {
   // "100" label with no pill (the debugger's BH1). The fetch above is
   // Load more's real job at All; the bump is only for revealing pool
   // items a cap was hiding.
-  if (resultLimit() > 0) extraLimit += LOAD_MORE_STEP;
-  renderResults(lastResults, lastReports, lastQuery);
+  if (resultLimit() > 0) v.extraLimit += LOAD_MORE_STEP;
+  // Only the newest load renders, and only into its own view (same race
+  // as search() above). A hidden view's data is stored for the switch
+  // (needsRender), which renders it then.
+  if (v !== activeView() || activeTab.kind !== "search" || favsView) { v.needsRender = true; syncViewGlobals(v); updateLoadMoreButton(); return; }
+  syncViewGlobals(v);
+  renderResults(v.results, v.reports, v.query);
   updateLoadMoreButton();
 }
 
@@ -1788,9 +1977,12 @@ function markFullFailed(img, reason) {
   // so the counts and the phase reconcile — mirroring markCardLoaded /
   // markCardFailed. Without this, the meter would stay on "Preloading…"
   // when the observer, not the pump, settles the last card as Preview
-  // only: nothing else re-evaluates the phase in that path.
-  const counts = updateLoadedFilterButtons();
-  refreshPreloadPhase(counts);
+  // only: nothing else re-evaluates the phase in that path. Per view
+  // (round 17): the card's view reconciles, not the active tab's.
+  const view = viewOfImg(img);
+  const counts = updateLoadedFilterButtons(view);
+  refreshPreloadPhase(counts, view);
+  syncViewGlobals(view);
 }
 
 // The upgrade chain in loadFullImage exhausted: decide between the two
@@ -1892,31 +2084,37 @@ const probedFullUrls = new Set();
 // Capped like probedFullUrls: a long session would otherwise grow it
 // without bound. Evicting the oldest only loses the rebuild shortcut;
 // the card's own class (on the live node) is untouched.
-const loadedPages = new Set();
+let loadedPages = new Set();
 function markCardLoaded(img) {
   // The page key lives on the img (see cardHtml) so a rebuilt card can
   // be matched without a DOM walk; fall back to the card's fav button.
+  // The loaded record is per view (round 17): the card's view owns the
+  // Set, so a hidden tab's load never scribbles on the active tab's.
+  const view = viewOfImg(img);
   const page = (img.dataset && img.dataset.page)
     || (img._card && img._card.querySelector('[data-action="toggle-fav"]')?.dataset?.page)
     || null;
   if (page) {
-    if (loadedPages.size >= PROBED_URLS_CAP) loadedPages.delete(loadedPages.values().next().value);
-    loadedPages.add(page);
+    if (view.loadedPages.size >= PROBED_URLS_CAP) view.loadedPages.delete(view.loadedPages.values().next().value);
+    view.loadedPages.add(page);
   }
   const card = img._card || img.closest(".card");
   if (card) card.classList.add("is-loaded");
-  const counts = updateLoadedFilterButtons();
-  refreshPreloadPhase(counts);
+  const counts = updateLoadedFilterButtons(view);
+  refreshPreloadPhase(counts, view);
+  syncViewGlobals(view);
 }
 function markCardFailed(img) {
+  const view = viewOfImg(img);
   const page = (img.dataset && img.dataset.page)
     || (img._card && img._card.querySelector('[data-action="toggle-fav"]')?.dataset?.page)
     || null;
-  if (page) loadedPages.delete(page);
+  if (page) view.loadedPages.delete(page);
   const card = img._card || img.closest(".card");
   if (card) card.classList.remove("is-loaded");
-  const counts = updateLoadedFilterButtons();
-  refreshPreloadPhase(counts);
+  const counts = updateLoadedFilterButtons(view);
+  refreshPreloadPhase(counts, view);
+  syncViewGlobals(view);
 }
 
 // --- Preload ---
@@ -1973,55 +2171,460 @@ let preloadCount = 0; // wallpapers eagerly preloaded, this view (see below)
 // to read them too, but since round 11 it shows the grid's loaded state
 // instead — see updatePreloadMeter — so the two visible counts agree.)
 // Reset by resetPreloadBatch() when a new batch lands (loadMore, a fresh
-// Trending load) and by search()'s reset. Saved per view with the counters
-// (see preloadStateByView) so a round trip doesn't resurrect a stale base.
+// Trending load) and by search()'s reset. Saved per view in the view
+// state (see the session-tabs engine) so a round trip doesn't resurrect
+// a stale base.
 let preloadBaseSpent = 0;
 let preloadBaseCount = 0;
 // A new batch landed (load more, fresh Trending load): the current batch's
 // budget starts here. The session counters are NOT touched (AN5) — only
 // the base moves, so the meter's batch numbers restart at 0 / target while
-// the session totals keep accumulating underneath.
-function resetPreloadBatch() {
-  preloadBaseSpent = preloadSpent;
-  preloadBaseCount = preloadCount;
+// the session totals keep accumulating underneath. Takes the view the
+// batch belongs to (round 17): the pump runs per view, so the base is
+// per view too; the globals are refreshed when the view is active.
+function resetPreloadBatch(view = activeView()) {
+  view.preloadBaseSpent = view.preloadSpent;
+  view.preloadBaseCount = view.preloadCount;
+  syncViewGlobals(view);
 }
 // Preload progress is PER VIEW, not per page: the meter counts one view's
 // preloads, and switching views must not reset it (the v5.6 browser test:
 // the meter restarted at 0 after a Favorites/Trending round trip —
 // loadTrending zeroed both counters on every fresh load, so the search
-// session's progress was destroyed). Each view's {spent, count} is saved
-// when leaving it and restored on return (see syncPreloadView, called
-// from the view setters). A NEW search is still a new session: search()
-// zeroes the search view's counters AND its stored entry, so stale
-// progress can never resurrect after a later round trip. Favorites never
-// preloads (the pump stops there), so its entry stays {0, 0}.
-const preloadStateByView = new Map(); // view key -> { spent, count, baseSpent, baseCount }
-let preloadViewKey = "search"; // the view the counters currently belong to
-// Save the outgoing view's counters and restore the incoming view's.
-// Called from setFavsView/setTrendingView AFTER the flag flips, so the
-// current key is the new view and preloadViewKey is still the old one.
-// The double-setter call pattern (renderFavsView calls setFavsView(true)
-// then setTrendingView(false)) is safe: the second call is a no-op
-// because the key already matches.
+// session's progress was destroyed). The counters and the batch base live
+// in the view-state object (see the session-tabs engine below) and are
+// saved / restored by saveViewRuntime / restoreViewRuntime. A NEW search
+// is still a new session: search() zeroes the search view's counters, so
+// stale progress can never resurrect after a later round trip. Favorites
+// never preloads (the pump stops there).
 function syncPreloadView() {
-  const key = favsView ? "favs" : trendingView ? "trending" : "search";
-  if (key === preloadViewKey) return;
-  preloadStateByView.set(preloadViewKey, { spent: preloadSpent, count: preloadCount, baseSpent: preloadBaseSpent, baseCount: preloadBaseCount });
-  const s = preloadStateByView.get(key);
-  preloadSpent = s ? s.spent : 0;
-  preloadCount = s ? s.count : 0;
-  preloadBaseSpent = s ? (s.baseSpent || 0) : 0;
-  preloadBaseCount = s ? (s.baseCount || 0) : 0;
-  preloadViewKey = key;
-  // The phase belongs to the view too (round 10): entering Favorites
-  // idles it (the pump never runs there — the meter hides), and entering
-  // Search/Trending restarts it as "loading" when a target is set (the
-  // pump corrects it to ready/paused on the new view's first render).
-  // Without this the meter shows the previous view's state until the
-  // next render — and, for an empty Favorites view, forever, since the
-  // empty branch returns before restartPreload.
-  preloadPhase = key === "favs" ? "idle" : (preloadTarget() > 0 ? "loading" : "idle");
+  // Removed in round 17 (session tabs): the per-view preload store only
+  // saved four counters and re-derived the phase, so a round trip could
+  // resurrect a stale batch base and idle a live phase. The tab engine
+  // below (saveViewRuntime / restoreViewRuntime / saveActiveTab /
+  // restoreActiveTab) owns all per-view state now. Kept as a no-op so
+  // any stale call site fails loudly in tests rather than silently.
+  throw new Error("syncPreloadView removed — use the tab engine (round 17)");
+}
+
+// --- Session tabs (round 17) ---
+// One tab per search / trending view, so a slow search keeps loading in
+// the background while the user looks at Trending or another search. The
+// tab bar (#session-tabs) sits under the header; Favorites stays out of
+// tabs (a saved-items view, not a loading view) and keeps its own toggle.
+//
+// State model: every (tab, kind) pair owns a view-state object holding
+// ALL of that view's state — its results/reports/query, its load-more
+// cursors, its preload counters/phase/batch base, its loaded-pages Set,
+// its grid filter, its card map, its pump queue, and its status-pill
+// snapshot. The app's globals (lastResults, preloadSpent, gridFilter,
+// cardByPage, …) are mirrors of the ACTIVE tab's views: the search-kind
+// globals mirror the active tab's search view, the trending-kind globals
+// mirror its trending view, and the runtime globals (preload counters,
+// phase, pump queue, …) mirror whichever kind is active. saveActiveTab()
+// / restoreActiveTab() move the globals into / out of a tab's view
+// objects on a tab switch; saveViewRuntime() / restoreViewRuntime() move
+// the runtime globals between the two kinds of the SAME tab on a mode
+// flip (Search <-> Trending) or a Favorites round trip. This replaces the
+// per-view preload store (preloadStateByView / syncPreloadView): it only
+// saved four counters and re-derived the phase, so a round trip could
+// resurrect a stale batch base and idle a live phase. The pump and the
+// card loaders take a view object and write it directly (see
+// syncViewGlobals), so a hidden tab's pump keeps running while the user
+// looks at another tab — nothing is cancelled by a switch.
+//
+// The grid is one flat #results: every view's cards, skeletons and empty
+// states live in it together, each tagged data-view="<tab>:<kind>", and a
+// tab switch toggles the hidden attribute on the outgoing / incoming
+// view's nodes. The CSS multi-column masonry needs the cards as direct
+// children of #results, so there is no per-view container to hide.
+function newViewState(kind) {
+  return {
+    kind,
+    // Data (mirrored in the per-kind globals: lastResults/lastReports/
+    // lastQuery/lastCursors/lastSourceState/extraLimit/moreLoading/
+    // searchLoading for search; lastTrendingResults/lastTrendingReports/
+    // trendingLoading for trending).
+    results: [], reports: [], query: "",
+    cursors: {}, sourceState: {}, extraLimit: 0,
+    moreLoading: false, searchLoading: false, trendingLoading: false,
+    seq: 0, // this view's latest load generation (see viewSeq)
+    // Runtime (mirrored in the shared globals while this view is active).
+    preloadSpent: 0, preloadCount: 0, preloadBaseSpent: 0, preloadBaseCount: 0,
+    preloadPhase: "idle",
+    loadedPages: new Set(),
+    gridFilter: "loaded",
+    cardByPage: new Map(),
+    lastRenderProxyUp: false, lastRenderFavsView: false, lastRenderTrendingView: false,
+    lastVisibleCount: 0, lastLimitHidden: 0,
+    preloadQueue: [], preloadIndex: 0, preloadInFlight: false, preloadRunning: false,
+    cachedLoadedCounts: null,
+    // Rendered snapshot: the visible items (for renderedByPage on a tab
+    // switch) and the status pills + reserve classes (rebuilt by render).
+    visible: [],
+    statusHtml: "", statusReserved: false, statusReservedTrending: false,
+    // A load that finished while this view was hidden stored its data
+    // without rendering — the switch renders it then.
+    needsRender: false,
+  };
+}
+let tabIdCounter = 0;
+const viewsByKey = new Map(); // "t1:search" -> view object (for viewOfImg)
+let tabs = [];
+let activeTab = null;
+function viewKey(tab, kind) { return `${tab.id}:${kind}`; }
+function activeView() { return activeTab.views[activeTab.kind]; }
+function createTab(kind) {
+  const tab = { id: `t${++tabIdCounter}`, kind, views: { search: newViewState("search"), trending: newViewState("trending") } };
+  viewsByKey.set(viewKey(tab, "search"), tab.views.search);
+  viewsByKey.set(viewKey(tab, "trending"), tab.views.trending);
+  tabs.push(tab);
+  return tab;
+}
+// The view a card / img belongs to, from the data-view tag on its card
+// (see cardHtml). Falls back to the active view for harness-built nodes
+// with no card ancestor — the callers that need a view always pass one
+// with a real card behind it.
+function viewOfCard(card) {
+  const key = card && card.dataset ? card.dataset.view : null;
+  return (key && viewsByKey.get(key)) || activeView();
+}
+function viewOfImg(img) {
+  const card = img._card || img.closest(".card");
+  return viewOfCard(card);
+}
+// Copy one view's runtime fields into the globals (no status pills —
+// those are written by renderResults / the submit path, and restored by
+// restoreViewRuntime from the snapshot).
+function copyRuntimeToGlobals(v) {
+  preloadSpent = v.preloadSpent;
+  preloadCount = v.preloadCount;
+  preloadBaseSpent = v.preloadBaseSpent;
+  preloadBaseCount = v.preloadBaseCount;
+  preloadPhase = v.preloadPhase;
+  loadedPages = v.loadedPages;
+  gridFilter = v.gridFilter;
+  cardByPage = v.cardByPage;
+  lastRenderProxyUp = v.lastRenderProxyUp;
+  lastRenderFavsView = v.lastRenderFavsView;
+  lastRenderTrendingView = v.lastRenderTrendingView;
+  lastVisibleCount = v.lastVisibleCount;
+  lastLimitHidden = v.lastLimitHidden;
+  preloadQueue = v.preloadQueue;
+  preloadIndex = v.preloadIndex;
+  preloadInFlight = v.preloadInFlight;
+  preloadRunning = v.preloadRunning;
+  cachedLoadedCounts = v.cachedLoadedCounts;
+}
+function copyRuntimeFromGlobals(v) {
+  v.preloadSpent = preloadSpent;
+  v.preloadCount = preloadCount;
+  v.preloadBaseSpent = preloadBaseSpent;
+  v.preloadBaseCount = preloadBaseCount;
+  v.preloadPhase = preloadPhase;
+  v.loadedPages = loadedPages;
+  v.gridFilter = gridFilter;
+  v.cardByPage = cardByPage;
+  v.lastRenderProxyUp = lastRenderProxyUp;
+  v.lastRenderFavsView = lastRenderFavsView;
+  v.lastRenderTrendingView = lastRenderTrendingView;
+  v.lastVisibleCount = lastVisibleCount;
+  v.lastLimitHidden = lastLimitHidden;
+  v.preloadQueue = preloadQueue;
+  v.preloadIndex = preloadIndex;
+  v.preloadInFlight = preloadInFlight;
+  v.preloadRunning = preloadRunning;
+  v.cachedLoadedCounts = cachedLoadedCounts;
+}
+// Save / restore the ACTIVE tab's runtime (its active kind). Called on a
+// mode flip and a Favorites round trip. The status pills + reserve
+// classes are snapshotted from the DOM on save (they are rebuilt by
+// renderResults / the submit path, so the DOM is the source) and
+// re-applied on restore.
+function saveViewRuntime() {
+  const v = activeView();
+  copyRuntimeFromGlobals(v);
+  v.statusHtml = statusBox().innerHTML;
+  v.statusReserved = statusBox().classList.contains("status-reserved");
+  v.statusReservedTrending = statusBox().classList.contains("status-reserved-trending");
+  // The inline reserve too (round 17 debugger): it is the stored measured
+  // height, applied to the shared status row — without snapshotting it, a
+  // tab switch leaves the outgoing tab's reserve under the incoming tab's
+  // pills (dead space one way, a residual jump the other), and a kind flip
+  // back from Trending restores nothing.
+  v.statusInline = statusBox().style.minHeight;
+}
+function restoreViewRuntime() {
+  const v = activeView();
+  copyRuntimeToGlobals(v);
+  statusBox().innerHTML = v.statusHtml;
+  statusBox().classList.toggle("status-reserved", v.statusReserved);
+  statusBox().classList.toggle("status-reserved-trending", v.statusReservedTrending);
+  statusBox().style.minHeight = v.statusInline || "";
+}
+// Write a view's state into the globals, but only when it IS the active
+// view — the pump and the card loaders run for hidden views too, and
+// must never scribble on the active tab's globals. The data fields are
+// copied for the view's own kind only (the other kind's globals are the
+// same tab's other view and stay put).
+function syncViewGlobals(view) {
+  if (view !== activeView()) return;
+  if (view.kind === "search") {
+    lastResults = view.results;
+    lastReports = view.reports;
+    lastQuery = view.query;
+    lastCursors = view.cursors;
+    lastSourceState = view.sourceState;
+    extraLimit = view.extraLimit;
+    moreLoading = view.moreLoading;
+    searchLoading = view.searchLoading;
+  } else {
+    lastTrendingResults = view.results;
+    lastTrendingReports = view.reports;
+    trendingLoading = view.trendingLoading;
+  }
+  copyRuntimeToGlobals(view);
+}
+// Save / restore a whole tab: both kinds' data plus the active kind's
+// runtime. Only ever called on the active tab (before switching away /
+// after switching to it).
+function saveActiveTab() {
+  const tab = activeTab;
+  tab.views.search.results = lastResults;
+  tab.views.search.reports = lastReports;
+  tab.views.search.query = lastQuery;
+  tab.views.search.cursors = lastCursors;
+  tab.views.search.sourceState = lastSourceState;
+  tab.views.search.extraLimit = extraLimit;
+  tab.views.search.moreLoading = moreLoading;
+  tab.views.search.searchLoading = searchLoading;
+  tab.views.trending.results = lastTrendingResults;
+  tab.views.trending.reports = lastTrendingReports;
+  tab.views.trending.trendingLoading = trendingLoading;
+  saveViewRuntime();
+}
+function restoreActiveTab() {
+  const tab = activeTab;
+  lastResults = tab.views.search.results;
+  lastReports = tab.views.search.reports;
+  lastQuery = tab.views.search.query;
+  lastCursors = tab.views.search.cursors;
+  lastSourceState = tab.views.search.sourceState;
+  extraLimit = tab.views.search.extraLimit;
+  moreLoading = tab.views.search.moreLoading;
+  searchLoading = tab.views.search.searchLoading;
+  lastTrendingResults = tab.views.trending.results;
+  lastTrendingReports = tab.views.trending.reports;
+  trendingLoading = tab.views.trending.trendingLoading;
+  // The trending flag is a mirror of the tab's kind (round 17): without
+  // this a switch from a Trending tab to a search tab leaves trendingView
+  // stale-true, so the chrome, the grid filter and the result limit all
+  // read the wrong view (BT8).
+  trendingView = tab.kind === "trending";
+  restoreViewRuntime();
+}
+// The tab bar: one button per tab (label = its query, or "Trending", or
+// "New search" for a fresh tab; long queries truncate by ellipsis) with
+// a × to close it, plus the + button (static in index.html). Rebuilt
+// from the tab list; the + button is re-appended last so it stays at the
+// end (appendChild moves it — the shim has no insertBefore).
+function tabLabel(tab) {
+  if (tab.kind === "trending") return "Trending";
+  const q = tab.views.search.query;
+  return q ? q : "New search";
+}
+function updateTabBar() {
+  const bar = staticEl("session-tabs");
+  if (!bar) return;
+  const newBtn = staticEl("session-tab-new");
+  [...bar.children].forEach((el) => { if (el !== newBtn) el.remove(); });
+  for (const tab of tabs) {
+    const el = document.createElement("div");
+    el.setAttribute("class", "session-tab" + (tab === activeTab ? " active" : ""));
+    el.setAttribute("role", "tab");
+    el.setAttribute("aria-selected", tab === activeTab ? "true" : "false");
+    el.dataset.tabId = tab.id;
+    const label = document.createElement("button");
+    label.setAttribute("type", "button");
+    label.setAttribute("class", "session-tab-label");
+    label.textContent = tabLabel(tab);
+    el.appendChild(label);
+    const close = document.createElement("button");
+    close.setAttribute("type", "button");
+    close.setAttribute("class", "session-tab-close");
+    close.setAttribute("aria-label", "Close tab");
+    close.textContent = "×";
+    el.appendChild(close);
+    bar.appendChild(el);
+  }
+  if (newBtn) bar.appendChild(newBtn);
+}
+// Switch tabs. Favorites is an overlay on the old tab: leave it first
+// (it restores the old tab's view and re-renders it), so the save below
+// captures the old tab's real state, not the favorites render. The
+// outgoing view's nodes are hidden, the incoming view's are shown, and
+// its chrome (status pills, meter, filter, load-more, query box, site
+// links) is restored from its view object. A load that finished while
+// the incoming view was hidden is rendered now (its skeletons are still
+// in the grid); otherwise the pump is kicked in case it stopped while
+// hidden. The loading tab's fetches and pump were never cancelled —
+// they kept running against its view object the whole time.
+function switchTab(tab) {
+  if (!tab || tab === activeTab) return;
+  if (favsView) setFavsView(false);
+  saveActiveTab();
+  activeTab = tab;
+  restoreActiveTab();
+  const newKey = viewKey(activeTab, activeTab.kind);
+  const box = resultsBox();
+  // Direct children, not querySelectorAll (round 17 optimizer): the grid
+  // is flat (see the invariant above newViewState), so a subtree walk
+  // visits every card's ~6 descendants for nothing — the children walk
+  // is ~30x faster at 800 cards in the harness, identical in effect.
+  for (const el of [...box.children]) {
+    if (el.dataset.view) el.hidden = el.dataset.view !== newKey;
+  }
+  // The lightbox and the heart buttons read renderedByPage: rebuild it
+  // from the incoming view's stored visible set (renderResults does the
+  // same from its argument on every render).
+  renderedByPage.clear();
+  for (const r of activeView().visible) renderedByPage.set(r.page, r);
+  updateTabBar();
+  setTrendingChrome();
+  staticEl("query").value = activeTab.kind === "search" ? activeTab.views.search.query : "";
+  renderSiteLinks(activeTab.kind === "search" ? activeTab.views.search.query : "");
+  cachedLoadedCounts = null;
+  updateLoadedFilterButtons();
+  applyGridFilter();
   updatePreloadMeter();
+  updateLoadMoreButton();
+  if (activeView().needsRender) {
+    activeView().needsRender = false;
+    renderResults(activeView().results, activeView().reports, activeView().query);
+  } else {
+    pumpPreload(activeView());
+  }
+}
+// Open a fresh search tab (empty query, focused on the search box). The
+// tab's idle empty state is appended at creation, tagged with its key,
+// so the switch has something to show.
+function openNewTab() {
+  const tab = createTab("search");
+  const holder = document.createElement("div");
+  holder.innerHTML = idleResultsHtml;
+  const state = holder.firstElementChild || holder.children[0];
+  if (state) {
+    state.setAttribute("data-view", viewKey(tab, "search"));
+    state.hidden = true;
+    resultsBox().appendChild(state);
+  }
+  switchTab(tab);
+  staticEl("query").focus();
+}
+// Close a tab. The last tab cannot be closed (the × is hidden for it
+// too, and this refuses). Closing the active tab switches to a neighbor
+// first (preferring the one to the left); closing a background tab just
+// drops its nodes. In-flight upgrades for the closed tab's cards are
+// cancelled and their nodes removed — a load that lands later writes
+// into the detached view object, which nothing reads again.
+function closeTab(tab) {
+  if (!tab || tabs.length <= 1) return;
+  if (tab === activeTab) {
+    const idx = tabs.indexOf(tab);
+    switchTab(tabs[Math.max(0, idx - 1)]);
+  }
+  // Remove the tab's nodes (both kinds, hidden or shown) — clearViewNodes
+  // is tab-scoped, so one call covers both kinds and cancels their
+  // in-flight upgrades.
+  clearViewNodes(tab.views.search);
+  viewsByKey.delete(viewKey(tab, "search"));
+  viewsByKey.delete(viewKey(tab, "trending"));
+  const idx = tabs.indexOf(tab);
+  if (idx >= 0) tabs.splice(idx, 1);
+  updateTabBar();
+}
+// The tab bar's click delegation: the label switches, the × closes, the
+// + opens a fresh tab.
+function onSessionTabClick(ev) {
+  const closeBtn = ev.target.closest(".session-tab-close");
+  if (closeBtn) {
+    const tabEl = closeBtn.closest(".session-tab");
+    const tab = tabs.find((t) => t.id === (tabEl && tabEl.dataset.tabId));
+    if (tab) closeTab(tab);
+    return;
+  }
+  if (ev.target.closest("#session-tab-new")) { openNewTab(); return; }
+  const tabEl = ev.target.closest(".session-tab");
+  if (tabEl) {
+    const tab = tabs.find((t) => t.id === tabEl.dataset.tabId);
+    if (tab) switchTab(tab);
+  }
+}
+// Remove one TAB's nodes from #results (cards, skeletons, empty
+// states), cancelling their in-flight upgrades first. The display being
+// replaced is the whole tab's, not one kind's: a kind flip (search <->
+// trending) leaves the other kind's cards on screen, and a re-render
+// must replace the whole display, not just its own kind's nodes. Other
+// tabs' nodes (hidden) are untouched. Untagged cards / empty states are
+// Favorites leftovers (search and trending nodes are always tagged) and
+// are dropped too — the back path re-renders after setFavsView(false),
+// so favsView is already false by then.
+function clearViewNodes(view) {
+  const key = viewKeyFor(view);
+  const tabId = key.split(":")[0];
+  // Cancel both kinds' in-flight upgrades (the other kind's cards are
+  // the ones on screen after a kind flip).
+  for (const [k, v] of viewsByKey) {
+    if (k.split(":")[0] === tabId) discardViewCards(v);
+  }
+  // Direct children, not querySelectorAll (round 17 optimizer — same
+  // flat-grid reason as switchTab). One snapshot for both passes: removal
+  // during the first pass must not shift the second pass's iteration.
+  const gridChildren = [...resultsBox().children];
+  for (const el of gridChildren) {
+    if (el.dataset.view && el.dataset.view.split(":")[0] === tabId) el.remove();
+  }
+  for (const el of gridChildren) {
+    if (!el.dataset.view && (el.classList.contains("card") || el.classList.contains("empty-state"))) el.remove();
+  }
+}
+function viewKeyFor(view) {
+  for (const [key, v] of viewsByKey) if (v === view) return key;
+  return "";
+}
+// Show the idle empty state for the active view (round 17): the old
+// innerHTML would wipe every tab's nodes.
+function showIdleForActiveView() {
+  const v = activeView();
+  clearViewNodes(v);
+  appendViewHtml(v, idleResultsHtml);
+}
+// Append HTML nodes to #results, tagged with a view's key (round 17).
+// Used for the skeletons (search / trending): the grid is flat across
+// tabs, so the old innerHTML would wipe every tab's nodes. The tag is set
+// UNCONDITIONALLY (round 17 optimizer): idleResultsHtml carries the FIRST
+// tab's tag (it is captured after the load-time idle is tagged), so an
+// "only if missing" guard left an idle restored in tab B tagged t1:search
+// — visible in tab A, and hidden in its own tab after a round trip.
+function appendViewHtml(view, html) {
+  const holder = document.createElement("div");
+  holder.innerHTML = html;
+  const key = viewKeyFor(view);
+  for (const child of [...holder.children]) {
+    child.setAttribute("data-view", key);
+    resultsBox().appendChild(child);
+  }
+}
+// The idle empty-state markup, tagged for a view (the captured
+// idleResultsHtml carries the FIRST tab's tag — it is captured after the
+// live idle div is tagged at load — so the tag is always overwritten
+// here, never trusted).
+function idleHtmlFor(view) {
+  const holder = document.createElement("div");
+  holder.innerHTML = idleResultsHtml;
+  const state = holder.firstElementChild || holder.children[0];
+  if (state) state.setAttribute("data-view", viewKeyFor(view));
+  return holder.innerHTML;
 }
 let preloadQueue = []; // card <img>s in display order, rebuilt per render
 let preloadIndex = 0; // next queue entry to consider (only advances past an
@@ -2083,7 +2686,12 @@ function fmtBytes(n) {
   return `${Math.round(n / 1024)} KB`;
 }
 
-function updatePreloadMeter(counts) {
+function updatePreloadMeter(counts, view = activeView()) {
+  // The meter shows the ACTIVE view only (round 17): a hidden view's
+  // pump still reconciles its phase and counts (via refreshPreloadPhase),
+  // but the DOM write is the active tab's — a background tab must never
+  // paint the foreground meter.
+  if (view !== activeView()) return;
   if (!preloadMeterElCache) preloadMeterElCache = $("#preload-meter");
   const el = preloadMeterElCache;
   if (!el) return;
@@ -2099,9 +2707,9 @@ function updatePreloadMeter(counts) {
   // run there, and the phase goes stale on the view switch (nothing calls
   // the pump when entering Favorites), so the view gate — not the phase —
   // hides it. Trending keeps it (the pump runs there by design).
-  const show = target > 0 && preloadPhase !== "idle" && !favsView;
+  const show = target > 0 && view.preloadPhase !== "idle" && !favsView;
   el.hidden = !show;
-  el.classList.toggle("is-loading", show && preloadPhase === "loading");
+  el.classList.toggle("is-loading", show && view.preloadPhase === "loading");
   if (!show) return;
   if (!preloadMeterTextCache) preloadMeterTextCache = el.querySelector(".preload-meter-text");
   if (!preloadMeterFillCache) preloadMeterFillCache = el.querySelector(".preload-meter-fill");
@@ -2121,13 +2729,14 @@ function updatePreloadMeter(counts) {
   // fresh walk here would run on every pump iteration (O(n²)) and trip
   // the optimizer's "0 document queries while pumping" check. Only the
   // very first call (no cache yet) walks the DOM, once.
-  const c = counts || cachedLoadedCounts || (cachedLoadedCounts = loadedCardCounts());
+  const c = counts || view.cachedLoadedCounts || (view.cachedLoadedCounts = loadedCardCounts(view));
+  cachedLoadedCounts = view.cachedLoadedCounts; // mirror for the tests / the global readers
   const n = c.loaded;
   const spent = c.loadedBytes;
   const plural = n === 1 ? "" : "s";
-  if (preloadPhase === "paused") {
+  if (view.preloadPhase === "paused") {
     text.textContent = `Paused — target reached · ${n} wallpaper${plural} · ${fmtBytes(spent)} / ${fmtBytes(target)}`;
-  } else if (preloadPhase === "ready") {
+  } else if (view.preloadPhase === "ready") {
     // "Ready" with failures says so (round 12): the v5.15 browser test
     // caught "Ready · 34 wallpapers" while 44/100 cards had permanently
     // failed — failed cards are settled, not loading, so the set IS done
@@ -2168,25 +2777,29 @@ function updatePreloadMeter(counts) {
 // and never from updateLoadedFilterButtons itself: the search reset calls
 // that while the OLD grid is still in the DOM, and promoting to "ready"
 // off the old grid's counts would be wrong (the new search just started).
-function refreshPreloadPhase(counts) {
-  if (favsView || preloadPhase === "idle" || preloadTarget() <= 0) return;
+function refreshPreloadPhase(counts, view = activeView()) {
+  // No favsView guard (round 17): the counts are the VIEW's cards
+  // (tagged data-view), not the favorites grid — a hidden tab reconciles
+  // while the user looks at favorites, and the active view's cards are
+  // gone while favorites shows, so its total is 0 and it returns below.
+  if (view.preloadPhase === "idle" || preloadTarget() <= 0) return;
   // As in updatePreloadMeter: read the cache (refreshed on every card
   // state change) rather than re-walking the DOM — this runs on the
   // pump's drain and on every card load/fail.
-  const c = counts || cachedLoadedCounts || (cachedLoadedCounts = loadedCardCounts());
+  const c = counts || view.cachedLoadedCounts || (view.cachedLoadedCounts = loadedCardCounts(view));
   if (c.total === 0) return;
   if (c.loading === 0) {
     // Nothing still loading: the set is done. Promote from "loading" (the
     // pump drained but the observer was still working) or from "paused"
     // (the budget was spent but the observer finished everything anyway —
     // "Paused — target reached" would be wrong when nothing is left).
-    if (preloadPhase === "loading" || preloadPhase === "paused") {
-      preloadPhase = "ready";
+    if (view.preloadPhase === "loading" || view.preloadPhase === "paused") {
+      view.preloadPhase = "ready";
     }
-  } else if (preloadPhase === "ready") {
+  } else if (view.preloadPhase === "ready") {
     // A card went pending again (a Retry, or a new render) — the meter
     // must not claim Ready while anything is still loading.
-    preloadPhase = "loading";
+    view.preloadPhase = "loading";
   }
   // Repaint on EVERY card state change (round 12), not only on a phase
   // change: the observer can load cards while the pump is stopped
@@ -2199,7 +2812,8 @@ function refreshPreloadPhase(counts) {
   // walk, and the optimizer's "0 queries while pumping" check is
   // untouched. (The pump's own updatePreloadMeter calls are now
   // redundant for the count, but harmless — they also refresh the fill.)
-  updatePreloadMeter(c);
+  updatePreloadMeter(c, view);
+  syncViewGlobals(view);
 }
 
 // Preload phase (round 10; redefined round 11): what the meter claims
@@ -2243,14 +2857,21 @@ let preloadPhase = "idle";
 // when the user raises the target. Does not run in the Favorites view —
 // a handful of deliberate picks, and the observer upgrades those on
 // demand anyway.
-function pumpPreload() {
-  if (preloadInFlight) return;
+function pumpPreload(view = activeView()) {
+  if (view.preloadInFlight) return;
   const target = preloadTarget();
-  if (!target || favsView) { preloadRunning = false; preloadPhase = "idle"; updatePreloadMeter(); return; }
+  // No target, or the user is looking at Favorites: stop. The phase is
+  // NOT idled here (round 17): the meter hides via its own gates
+  // (target > 0, not Favorites), and the phase is the view's loading
+  // state — idling it would lose a live "loading"/"paused" across a
+  // Favorites round trip, and the re-render on return re-arms the pump
+  // from the preserved phase. A hidden view's pump is unaffected by
+  // Favorites either way (it keeps running against its view object).
+  if (!target || favsView) { view.preloadRunning = false; updatePreloadMeter(null, view); syncViewGlobals(view); return; }
   let img = null;
-  while (preloadIndex < preloadQueue.length) {
-    img = preloadQueue[preloadIndex];
-    if (!img.isConnected || img.dataset.upgradeStarted) { preloadIndex++; continue; }
+  while (view.preloadIndex < view.preloadQueue.length) {
+    img = view.preloadQueue[view.preloadIndex];
+    if (!img.isConnected || img.dataset.upgradeStarted) { view.preloadIndex++; continue; }
     break;
   }
   // Queue drained: everything in the current set was attempted by the
@@ -2261,7 +2882,7 @@ function pumpPreload() {
   // when no card is still loading, and leaves the phase "loading" while
   // the observer finishes. (The phase stays a property of the current
   // set: a later render rebuilds the queue and pumpPreload re-arms it.)
-  if (!img || preloadIndex >= preloadQueue.length) { preloadRunning = false; refreshPreloadPhase(); updatePreloadMeter(); return; }
+  if (!img || view.preloadIndex >= view.preloadQueue.length) { view.preloadRunning = false; refreshPreloadPhase(null, view); updatePreloadMeter(null, view); return; }
   const cost = Number(img.dataset.cost) || 0;
   // Doesn't fit the remaining target: stop here WITHOUT consuming the
   // item, so raising the target later resumes with it. The meter settles
@@ -2269,24 +2890,26 @@ function pumpPreload() {
   // is batch-relative (AW1): the target is a per-batch budget, so a spent
   // session total must not block a fresh batch — resetPreloadBatch() moves
   // the base when a new batch lands (loadMore, fresh Trending load).
-  if ((preloadSpent - preloadBaseSpent) + cost > target) { preloadRunning = false; preloadPhase = "paused"; updatePreloadMeter(); return; }
-  preloadIndex++;
-  preloadRunning = true;
-  preloadPhase = "loading";
-  preloadInFlight = true;
-  updatePreloadMeter();
+  if ((view.preloadSpent - view.preloadBaseSpent) + cost > target) { view.preloadRunning = false; view.preloadPhase = "paused"; updatePreloadMeter(null, view); syncViewGlobals(view); return; }
+  view.preloadIndex++;
+  view.preloadRunning = true;
+  view.preloadPhase = "loading";
+  view.preloadInFlight = true;
+  updatePreloadMeter(null, view);
+  syncViewGlobals(view);
   loadFullImage(img, (status) => {
-    preloadInFlight = false;
+    view.preloadInFlight = false;
     if (status === "downloaded") {
-      preloadSpent += cost;
-      preloadCount++;
-      updatePreloadMeter();
+      view.preloadSpent += cost;
+      view.preloadCount++;
+      updatePreloadMeter(null, view);
     }
-    queueMicrotask(pumpPreload);
+    syncViewGlobals(view);
+    queueMicrotask(() => pumpPreload(view));
   });
 }
 
-function restartPreload(imgs) {
+function restartPreload(imgs, view = activeView()) {
   // The full rebuild already collected the grid's imgs (see renderResults);
   // passing them in skips a second querySelectorAll over the whole grid.
   // Other callers (the sort-only fast path) pass nothing and query as before.
@@ -2301,12 +2924,20 @@ function restartPreload(imgs) {
   // meter after that, so the stale count would stick. One walk per
   // render, not per pump iteration, so the optimizer's "0 queries while
   // pumping" check is untouched.
-  updateLoadedFilterButtons();
+  // The queue is this view's cards only (round 17): the flat grid holds
+  // every tab's cards, so an unscoped query would pump another tab's.
+  updateLoadedFilterButtons(view);
   const box = imgs ? null : resultsBox();
-  preloadQueue = imgs || (box ? [...box.querySelectorAll(".card img")] : []);
-  preloadIndex = 0;
-  updatePreloadMeter();
-  pumpPreload();
+  // Direct children, not querySelectorAll(".card img") (round 17
+  // optimizer): each card carries its img as card._img (see buildCard),
+  // so the walk only needs the cards themselves, in display order.
+  const all = imgs || (box ? [...box.children]
+    .filter((el) => el.classList.contains("card"))
+    .map((card) => card._img || card.querySelector("img")).filter(Boolean) : []);
+  view.preloadQueue = all.filter((img) => viewOfImg(img) === view);
+  view.preloadIndex = 0;
+  updatePreloadMeter(null, view);
+  pumpPreload(view);
 }
 
 // Grid filter (round 10): which cards the search grid shows while a
@@ -2333,10 +2964,19 @@ function gridFilterActive() {
 // (card load/fail, Preview only, applyGridFilter) and reset to zero by a
 // new search session (see the reset in the search handler).
 let cachedLoadedCounts = null;
-function loadedCardCounts() {
+function loadedCardCounts(view = activeView()) {
   const box = resultsBox();
   if (!box) return { total: 0, loaded: 0, pending: 0, loading: 0, loadedBytes: 0, failed: 0 };
-  const cards = box.querySelectorAll(".card");
+  // Only this view's cards (round 17): the flat grid holds every tab's
+  // cards, and the Favorites cards are untagged (they belong to no view).
+  const key = viewKeyFor(view);
+  // Direct children, not querySelectorAll (round 17 optimizer): the grid
+  // is flat, so the subtree walk visits ~6 nodes per card (img, badges,
+  // buttons) to find the cards themselves — the children walk is ~30x
+  // faster at 800 cards in the harness (8ms -> 0.25ms per call), same set
+  // in the same order. This is the hottest walk in the app: it runs on
+  // every card state change.
+  const cards = [...box.children].filter((card) => card.classList.contains("card") && card.dataset.view === key);
   let loaded = 0, loading = 0, failed = 0, loadedBytes = 0;
   for (const card of cards) {
     // The img is cached on the card at build time (see buildCard) — a
@@ -2359,12 +2999,17 @@ function loadedCardCounts() {
   }
   return { total: cards.length, loaded, pending: cards.length - loaded, loading, loadedBytes, failed };
 }
-function updateLoadedFilterButtons() {
-  const row = staticEl("loaded-filter");
-  if (!row) return null;
-  const counts = loadedCardCounts();
-  cachedLoadedCounts = counts; // refresh the cache (see above) — the
+function updateLoadedFilterButtons(view = activeView()) {
+  // The counts are per view (round 17) and cached on the view; the DOM
+  // write is the ACTIVE view's only — a hidden tab's load must never
+  // repaint the foreground filter row.
+  const counts = loadedCardCounts(view);
+  view.cachedLoadedCounts = counts; // refresh the cache (see above) — the
   // meter and the phase reconcile read this instead of re-walking the DOM
+  syncViewGlobals(view);
+  const row = staticEl("loaded-filter");
+  if (!row) return counts;
+  if (view !== activeView()) return counts;
   const { total, loaded, pending } = counts;
   const setBtn = (id, label, on) => {
     const b = staticEl(id);
@@ -2385,14 +3030,14 @@ function updateLoadedFilterButtons() {
     // counts — anything reading the DOM (including the v5.15 browser test)
     // saw stale numbers. The labels are re-set from the true counts the
     // moment the row unhides.
-    setBtn("filter-loaded", "✓ Loaded (0)", gridFilter === "loaded");
-    setBtn("filter-pending", "Not ready (0)", gridFilter === "pending");
-    setBtn("filter-all", "All (0)", gridFilter === "all");
+    setBtn("filter-loaded", "✓ Loaded (0)", view.gridFilter === "loaded");
+    setBtn("filter-pending", "Not ready (0)", view.gridFilter === "pending");
+    setBtn("filter-all", "All (0)", view.gridFilter === "all");
     return counts;
   }
-  setBtn("filter-loaded", `✓ Loaded (${loaded})`, gridFilter === "loaded");
-  setBtn("filter-pending", `Not ready (${pending})`, gridFilter === "pending");
-  setBtn("filter-all", `All (${total})`, gridFilter === "all");
+  setBtn("filter-loaded", `✓ Loaded (${loaded})`, view.gridFilter === "loaded");
+  setBtn("filter-pending", `Not ready (${pending})`, view.gridFilter === "pending");
+  setBtn("filter-all", `All (${total})`, view.gridFilter === "all");
   return counts;
 }
 function applyGridFilter() {
@@ -2405,6 +3050,7 @@ function applyGridFilter() {
 }
 function setGridFilter(mode) {
   gridFilter = mode;
+  activeView().gridFilter = mode;
   applyGridFilter();
 }
 
@@ -2435,8 +3081,10 @@ function loadFullImage(img, onDone) {
   // "ready" case so the common pump/observer path pays one string
   // comparison, not a DOM walk. The cache is invalidated first: it still
   // holds the pre-retry counts (this card settled), so the reconcile
-  // below must walk the DOM once to see the card pending again.
-  if (preloadPhase === "ready") { cachedLoadedCounts = null; refreshPreloadPhase(); }
+  // below must walk the DOM once to see the card pending again. Per view
+  // (round 17): the card's view demotes, not the active tab's.
+  const view = viewOfImg(img);
+  if (view.preloadPhase === "ready") { view.cachedLoadedCounts = null; refreshPreloadPhase(null, view); }
   // Some sources (Wallpapers.com) serve the card-sized thumbnail fine but
   // their full-size files are multi-MB on a CDN that stalls past the probe
   // timeout here. Keep the thumbnail: probing would only burn a slot, then
@@ -2693,6 +3341,25 @@ function updateFavsToggle() {
 }
 
 function setFavsView(on) {
+  // Entering Favorites saves the active view's runtime (round 17) so its
+  // preload phase/counters survive the round trip; leaving restores it.
+  // Only a real transition moves state — the setters are called
+  // unconditionally by search()/loadTrending()/the tab buttons, and a
+  // restore on an already-false view would overwrite the globals with
+  // the view object's stale snapshot. The phase is NOT idled on entry:
+  // the meter hides via the favsView gate, and the pump stops via its
+  // own favsView check — idling the phase would lose a live
+  // "loading"/"paused" that the back path's re-render re-arms from.
+  if (on && !favsView) saveViewRuntime();
+  if (!on && favsView) {
+    restoreViewRuntime();
+    // Leaving Favorites: the reserve the view saved was captured before
+    // the favorites entry cleared it (setStatusReserve(0) below), so
+    // restoring it would re-add a reserve the back path's final-pill
+    // render must not have (X5b). Clear it — the back path renders final
+    // pills, and any new search sets its own reserve right after.
+    setStatusReserve(0);
+  }
   favsView = on;
   updateFavsToggle();
   // Entering Favorites: its status is one or two pills, so a reserve left
@@ -2700,13 +3367,21 @@ function setFavsView(on) {
   // Favorites needs no reserve either — the back path re-renders the
   // previous view's final pills directly, with no busy phase.
   if (on) setStatusReserve(0);
-  syncPreloadView();
+  syncViewGlobals(activeView());
   applyGridFilter(); // the filter only applies in the search view (round 10)
+  setTrendingChrome(); // nav/panel follow favsView (round 17): entering
+  // Favorites hides the trending panel and neutralises both tabs; leaving
+  // re-shows the panel / re-activates the tab of the kind the tab holds.
 }
 
 function renderFavsView() {
+  // Favorites is an overlay on the current tab (round 17), NOT a tab
+  // kind: the tab keeps its kind (search or trending) so the back path
+  // knows which view to restore, and setFavsView re-applies the chrome
+  // (panel hidden, both tabs neutral) while favsView is on. Flipping the
+  // kind here (the pre-tabs code did) loses "was on trending" and makes
+  // the favorites render clear the wrong view's nodes.
   setFavsView(true);
-  setTrendingView(false);
   // Favorites render in the current sort order (they carry date/score, so
   // Best/Newest/Largest all compose); unscored ones sort last in Best mode,
   // exactly like search results.
@@ -2727,23 +3402,32 @@ let lastRenderProxyUp = false;
 let lastRenderFavsView = false;
 let lastRenderTrendingView = false;
 
-// Discard every card currently on screen: abort its in-flight full-res
-// upgrade (otherwise the probe downloads to completion for an image that
+// Discard one view's cards on screen: abort their in-flight full-res
+// upgrades (otherwise the probe downloads to completion for an image that
 // will never be shown — and, worse, a preload probe whose card is gone
 // never fires its onDone, which stalls the preload pump forever) and drop
-// the old images from the observer (detached nodes never intersect, so
-// they would never be unobserved). Call before ANY innerHTML replacement
-// of #results — the empty-state branch, the full rebuild, search()'s
-// skeleton render, and the Favorites toggle's idle restore. The sort-only
-// fast path must NOT call this: its cards stay on screen, only reordered.
-function discardRenderedCards() {
+// them from the observer (detached nodes never intersect, so they would
+// never be unobserved). Per view (round 17): only the given view's imgs
+// are unobserved — the old global disconnect() would drop the hidden
+// tabs' observations too, so their cards would never upgrade. Call before
+// ANY replacement of a view's nodes — the empty-state branch, the full
+// rebuild, search()'s skeleton render, and the Favorites toggle's idle
+// restore. The sort-only fast path must NOT call this: its cards stay on
+// screen, only reordered.
+function discardViewCards(view = activeView()) {
   const box = resultsBox();
   if (!box) return;
-  box.querySelectorAll(".card img").forEach((img) => {
+  // Direct children, not querySelectorAll(".card img") (round 17
+  // optimizer): the img is card._img, so the walk only needs the cards.
+  for (const card of [...box.children]) {
+    if (!card.classList.contains("card")) continue;
+    const img = card._img || card.querySelector("img");
+    if (!img || viewOfImg(img) !== view) continue;
     if (typeof img._cancelUpgrade === "function") img._cancelUpgrade();
-  });
-  if (imageObserver) imageObserver.disconnect();
+    if (imageObserver) imageObserver.unobserve(img);
+  }
 }
+function discardRenderedCards() { discardViewCards(activeView()); }
 
 // One card's HTML — a pure function of the item + favorite state, shared
 // by the full rebuild and the growth path (see buildCard), so both build
@@ -2751,7 +3435,7 @@ function discardRenderedCards() {
 // loadFullImage/probeUrl read; the anchor's inline aspect-ratio is the
 // frozen reserve (round 3 + round 7): imgLoaded never rewrites it, a
 // loaded image only fills in the badge's real dimensions.
-function cardHtml(r, fav) {
+function cardHtml(r, fav, viewKey) {
   // Pixels known -> "1920×1080". Pixels unknown but ratio known (only
   // Wallpapers.com: ratioW/ratioH from the listing thumb) -> the reduced
   // ratio, e.g. "16:9": the shape IS known, the pixels are not, and a
@@ -2777,14 +3461,26 @@ function cardHtml(r, fav) {
   // layout any height change rebalances the columns and reshuffles the
   // visual order, so a "correction" on load moved cards and changed
   // their order as the user scrolled.
+  // Cap portrait cards at 3:4 (round 17): a 9:16 phone wallpaper renders
+  // 533px tall in a 300px column and dominates its masonry column,
+  // while its landscape neighbours are ~170px — one tall card can be
+  // twice the row. The box is clamped to 3:4 (400px at 300px columns)
+  // and the image centre-crops to fill it (data-capped + cover in
+  // style.css); the badge still shows the TRUE dimensions and the
+  // viewer still opens the FULL uncropped image. Landscape and square
+  // cards are untouched; the 4:3 fallback never caps (4/3 > 3/4).
+  // data-capped (not a class): test-opt's parseCard matches the
+  // anchor/article class attributes exactly, and a class here would
+  // break its card parsing — the attribute rides in the regex's
+  // [^>]* gap instead.
+  const dims = (r.width && r.height) ? [r.width, r.height]
+    : (r.ratioW && r.ratioH) ? [r.ratioW, r.ratioH]
+    : [4, 3];
+  const capped = dims[0] / dims[1] < 3 / 4;
+  const ratio = capped ? "aspect-ratio:3 / 4" : `aspect-ratio:${dims[0]} / ${dims[1]}`;
   // referrerpolicy=no-referrer avoids Referer-based hotlink blocks.
   // Image URLs go through the local proxy when it is up (see
   // proxiedImageUrl) — verified 2026-11-15 to un-stall Zerochan images.
-  const ratio = (r.width && r.height)
-    ? `aspect-ratio:${r.width} / ${r.height}`
-    : (r.ratioW && r.ratioH)
-      ? `aspect-ratio:${r.ratioW} / ${r.ratioH}`
-      : `aspect-ratio:4 / 3`;
   const thumbSrc = proxiedImageUrl(r.thumb);
   // The full image the card LINKS to is always the original (the anchor
   // href and the "Full image" link below). What the card DISPLAYS can be
@@ -2818,9 +3514,13 @@ function cardHtml(r, fav) {
   // the viewer now (round 15), not on the card — see tagsHtmlFor below.
   // The card keeps only the image, the heart and Retry, so scrolling
   // stays clean; the tags belong to the one wallpaper being viewed.
+  // The card is tagged with its view (round 17): data-view="<tab>:<kind>"
+  // is how a tab switch, the counts walk and the pump tell one tab's
+  // cards from another's in the flat grid. Favorites cards get no tag
+  // (viewKey null) — they belong to no view.
   return `
-    <article class="card">
-      <a class="thumb" href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener" style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${escapeHtml(thumbSrc)}" data-full="${escapeHtml(displayUrl)}" data-alts="${escapeHtml(alts.join("|"))}"${r.thumbOnly ? ' data-thumb-only="1"' : ""} data-cost="${cost}" data-page="${escapeHtml(r.page)}" data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
+    <article class="card"${viewKey ? ` data-view="${viewKey}"` : ""}>
+      <a class="thumb" href="${escapeHtml(fullUrl)}" target="_blank" rel="noopener"${capped ? ' data-capped="1"' : ""} style="${ratio}"><img loading="lazy" decoding="async" referrerpolicy="no-referrer" src="${escapeHtml(thumbSrc)}" data-full="${escapeHtml(displayUrl)}" data-alts="${escapeHtml(alts.join("|"))}"${r.thumbOnly ? ' data-thumb-only="1"' : ""} data-cost="${cost}" data-page="${escapeHtml(r.page)}" data-state="thumb" onload="imgLoaded(this)" onerror="imgThumbError(this)" alt="${r.source} wallpaper ${res}">
         <span class="badge badge-res">${res}</span>
         <span class="badge badge-src">${r.source}</span>
       </a>
@@ -2849,9 +3549,9 @@ function tagsHtmlFor(r) {
 // here, exactly like the full rebuild does after parsing — imgLoaded and
 // markImageFailed rely on them, and the fallbacks keep an img built
 // outside renderResults working if the template ever drifts.
-function buildCard(r, fav) {
+function buildCard(r, fav, viewKey) {
   const holder = document.createElement("div");
-  holder.innerHTML = cardHtml(r, fav);
+  holder.innerHTML = cardHtml(r, fav, viewKey);
   const card = holder.children[0];
   const img = card.querySelector("img");
   img._anchor = img.parentElement || img.closest("a.thumb");
@@ -2872,6 +3572,24 @@ function buildCard(r, fav) {
   // loaded-only view until the observer re-verified it.
   if (loadedPages.has(r.page)) card.classList.add("is-loaded");
   return { card, img };
+}
+
+// Replace the active view's nodes with an empty-state div (round 17):
+// the grid is flat across tabs, so box.innerHTML would wipe every tab's
+// nodes. The empty state is tagged with the view's key, so a tab switch
+// hides it with the view; in the Favorites view it belongs to no view
+// and stays untagged. clearViewNodes cancels the outgoing cards'
+// in-flight upgrades first (the old discardRenderedCards call).
+function setEmptyState(html) {
+  const view = activeView();
+  clearViewNodes(view);
+  const holder = document.createElement("div");
+  holder.innerHTML = html;
+  const state = holder.firstElementChild || holder.children[0];
+  if (state) {
+    if (!favsView) state.setAttribute("data-view", viewKeyFor(view));
+    resultsBox().appendChild(state);
+  }
 }
 
 function renderResults(results, reports, q) {
@@ -2911,9 +3629,23 @@ function renderResults(results, reports, q) {
   // Remember what this render showed, for the Load more button (see
   // updateLoadMoreButton): whether any cards are on screen, and whether
   // the fetched pool still holds unrendered ones. Set here — before the
-  // empty-state returns below — so every render path reports it.
+  // empty-state returns below — so every render path reports it. The
+  // view object keeps the same numbers (round 17) so a tab switch
+  // restores them without a re-render, and `visible` is kept for the
+  // renderedByPage rebuild on a switch.
   lastVisibleCount = visible.length;
   lastLimitHidden = limitHidden;
+  // The view object keeps the same numbers (round 17) so a tab switch
+  // restores them without a re-render, and `visible` is kept for the
+  // renderedByPage rebuild on a switch — but NOT for a Favorites render:
+  // Favorites is an overlay, its numbers/cards belong to no tab view, and
+  // mirroring them would clobber the tab's own stored state (its visible
+  // set, its card map) that the back path renders from.
+  if (!favsView) {
+    activeView().lastVisibleCount = visible.length;
+    activeView().lastLimitHidden = limitHidden;
+    activeView().visible = visible;
+  }
   updateLoadMoreButton();
 
   // Rebuild the on-screen lookup the heart button's click handler uses.
@@ -2922,12 +3654,41 @@ function renderResults(results, reports, q) {
 
   const hiddenTotal = reports.reduce((sum, r) => sum + (r[3] || 0), 0);
 
+  // Round 17: re-apply the stored reserve before writing the pills —
+  // this is what covers the non-fetch renders (sort/ratio change, Load
+  // more, returning from Favorites/Trending), where no search() ran to
+  // set it. Search views only: Favorites/Trending have their own short
+  // pills and must not inherit a search's reserve.
+  if (!favsView && !trendingView) applyStoredStatusHeight();
   statusBox().innerHTML = reports.map(([name, payload, ok]) => {
     if (ok) {
-      return `<span class="status-pill pill-ok"><span class="pill-dot"></span><strong>${name}</strong>&nbsp;${escapeHtml(payload)}</span>`;
+      // Short pill (round 17): source + found count only — "danbooru
+      // 100". The via/purity/hidden detail used to print inline and
+      // stretched the pills over 5–6 rows at 1440px; it now lives in
+      // the title tooltip, so the row takes 1–2 rows and the reserve
+      // is re-based on the short text (see style.css). The payload
+      // always starts "<count> found" (see sourceReport); if a future
+      // format ever breaks that, fall back to the full text rather
+      // than an empty pill. Nothing is lost — the title holds the
+      // whole message.
+      const msg = String(payload);
+      const count = msg.match(/^([\d,]+ found)/)?.[1] || msg;
+      return `<span class="status-pill pill-ok" title="${escapeHtml(msg)}"><span class="pill-dot"></span><strong>${name}</strong>&nbsp;${escapeHtml(count)}</span>`;
     }
     const full = String((payload && payload.message) || payload || "");
-    return `<span class="status-pill pill-fail" title="${escapeHtml(full)}"><span class="pill-dot"></span><strong>${name}</strong>&nbsp;${shortReason(payload, name)}</span>`;
+    const fix = shortReason(payload, name);
+    // The visible text is the head of the fix only ("proxy off" /
+    // "no proxy" — the two proxy sentences are the long ones); the
+    // whole sentence + the error live in the title, so C1/D1 still
+    // find the strings in innerHTML and no information is lost.
+    // Only those two exact sentences are shortened — anything else
+    // shows in full, so a wording change degrades to the long pill
+    // instead of a silently clipped one.
+    const head = fix === "proxy off — run ./start.sh" ? "proxy off"
+      : fix === "no proxy — set up the Worker in Settings" ? "no proxy"
+      : fix;
+    const title = fix !== full ? `${fix} — ${full}` : full;
+    return `<span class="status-pill pill-fail" title="${escapeHtml(title)}"><span class="pill-dot"></span><strong>${name}</strong>&nbsp;${escapeHtml(head)}</span>`;
   }).join("") + (visible.length
     ? `<span class="status-pill pill-total"><strong>${visible.length} result${visible.length === 1 ? "" : "s"}</strong></span>`
     : "") + (ratioHidden > 0
@@ -2935,31 +3696,36 @@ function renderResults(results, reports, q) {
     : "") + (limitHidden > 0
     ? `<span class="status-pill pill-limit">${limitHidden} more — raise the limit to see them</span>`
     : "");
+  // Round 17: store this render's pills height for the next search's
+  // reserve (search views only — Favorites/Trending pills must not
+  // overwrite the search height).
+  if (!favsView && !trendingView) storeStatusHeight();
 
   const box = resultsBox();
   if (!visible.length) {
     // No cards on screen any more — the sort-only cache is empty too.
     cardByPage = new Map();
-    // Discard first: the empty state replaces the cards, and an in-flight
-    // upgrade on a discarded card would never report back (see
-    // discardRenderedCards) — the preload pump would stall forever.
-    discardRenderedCards();
+    if (!favsView) activeView().cardByPage = cardByPage;
     // Nothing to show — the pump has nothing to do, so the meter goes idle
     // (round 10); without this a target-set search that finds nothing leaves
     // the meter stuck on "Preloading… 0 / Y" (the empty branch returns
-    // before restartPreload, so the pump never corrects the phase).
+    // before restartPreload, so the pump never corrects the phase). The
+    // discard happens inside setEmptyState (clearViewNodes): an in-flight
+    // upgrade on a discarded card would never report back, and the
+    // preload pump would stall forever.
     preloadPhase = "idle";
+    if (!favsView) activeView().preloadPhase = "idle";
     updatePreloadMeter();
     // The filter row is refreshed after each empty state below (AW3) —
     // not here: the old cards are still in the DOM until innerHTML is
     // set, so the gate in updateLoadedFilterButtons would still see them.
     if (favsView && !uniq.length) {
-      box.innerHTML = `
+      setEmptyState(`
       <div class="empty-state">
         <div class="empty-icon" aria-hidden="true" style="font-size:64px;line-height:1">♡</div>
         <h2>No favorites yet</h2>
         <p>Tap the ♡ on any wallpaper to save it here.</p>
-      </div>`;
+      </div>`);
       applyGridFilter(); // AW3: no cards — the filter row hides (gate in updateLoadedFilterButtons)
       return;
     }
@@ -2967,7 +3733,7 @@ function renderResults(results, reports, q) {
     // offer to show all ratios (client-side, no re-search).
     if (uniq.length > 0) {
       const label = RATIO_LABELS[deviceRatio()] || "this ratio";
-      box.innerHTML = `
+      setEmptyState(`
       <div class="empty-state">
         <div class="empty-icon" aria-hidden="true">
           <svg viewBox="0 0 64 64" width="72" height="72" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="10" width="44" height="34" rx="6"/><circle cx="21" cy="23" r="4.5"/><path d="M10 38l11-11 9 9 7-7 11 11"/><circle cx="48" cy="46" r="9"/><line x1="54.5" y1="52.5" x2="60" y2="58"/></svg>
@@ -2975,13 +3741,13 @@ function renderResults(results, reports, q) {
         <h2>No ${label} wallpapers</h2>
         <p><strong>${uniq.length}</strong> matching wallpaper${uniq.length === 1 ? "" : "s"} in other ratios.</p>
         <button type="button" class="btn-ghost" data-action="clear-ratio">Show all ratios</button>
-      </div>`;
+      </div>`);
       applyGridFilter(); // AW3: no cards — the filter row hides
       return;
     }
     const m = minRes(); // read once: the condition below used to call it twice
     if (hiddenTotal > 0 && m) {
-      box.innerHTML = `
+      setEmptyState(`
       <div class="empty-state">
         <div class="empty-icon" aria-hidden="true">
           <svg viewBox="0 0 64 64" width="72" height="72" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="10" width="44" height="34" rx="6"/><circle cx="21" cy="23" r="4.5"/><path d="M10 38l11-11 9 9 7-7 11 11"/><circle cx="48" cy="46" r="9"/><line x1="54.5" y1="52.5" x2="60" y2="58"/></svg>
@@ -2989,11 +3755,11 @@ function renderResults(results, reports, q) {
         <h2>No wallpapers at ${m.w}×${m.h} or above</h2>
         <p><strong>${hiddenTotal.toLocaleString()}</strong> matching post${hiddenTotal === 1 ? "" : "s"} below that size.</p>
         <button type="button" class="btn-ghost" data-action="clear-res">Show all resolutions</button>
-      </div>`;
+      </div>`);
       applyGridFilter(); // AW3: no cards — the filter row hides
       return;
     }
-    box.innerHTML = `
+    setEmptyState(`
       <div class="empty-state">
         <div class="empty-icon" aria-hidden="true">
           <svg viewBox="0 0 64 64" width="72" height="72" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="10" width="44" height="34" rx="6"/><circle cx="21" cy="23" r="4.5"/><path d="M10 38l11-11 9 9 7-7 11 11"/><circle cx="48" cy="46" r="9"/><line x1="54.5" y1="52.5" x2="60" y2="58"/></svg>
@@ -3006,7 +3772,7 @@ function renderResults(results, reports, q) {
           <li>Enable another source, or try the site links above</li>
         </ul>
         <button type="button" class="btn-ghost" data-action="clear-res">Show all resolutions</button>
-      </div>`;
+      </div>`);
     applyGridFilter(); // AW3: no cards — the filter row hides
     return;
   }
@@ -3073,8 +3839,9 @@ function renderResults(results, reports, q) {
       if (!el) {
         // New card: build it from the shared template, observe its image
         // (or load it outright without an observer), and append it in
-        // order — exactly like the full rebuild does for every card.
-        const built = buildCard(r, favPages.has(r.page));
+        // order — exactly like the full rebuild does for every card. The
+        // view key tags it (round 17); Favorites cards get none.
+        const built = buildCard(r, favPages.has(r.page), favsView ? null : viewKeyFor(activeView()));
         el = built.card;
         if (observer) observer.observe(built.img);
         else loadFullImage(built.img);
@@ -3084,6 +3851,7 @@ function renderResults(results, reports, q) {
     }
     box.appendChild(frag);
     cardByPage = nextByPage;
+    if (!favsView) activeView().cardByPage = cardByPage;
     restartPreload(); // same cards, new order — preload follows the new order
     applyGridFilter(); // counts refresh after the set grew/shrank (round 10)
     return;
@@ -3099,12 +3867,32 @@ function renderResults(results, reports, q) {
   // render instead; rebuilt here because `favorites` changes between
   // renders (and the fast path above returns before this point).
   const favPages = new Set(favorites.map((f) => f.page));
-  box.innerHTML = visible.map((r) => cardHtml(r, favPages.has(r.page))).join("");
+  // The grid is flat across tabs (round 17), so box.innerHTML would wipe
+  // every tab's nodes. Remove this view's nodes, then append the new
+  // cards (tagged with the view's key; Favorites cards get none) in one
+  // fragment insertion — the same single live insertion as the old
+  // innerHTML, without touching the other tabs.
+  clearViewNodes(activeView());
+  const viewKey = favsView ? null : viewKeyFor(activeView());
+  const holder = document.createElement("div");
+  holder.innerHTML = visible.map((r) => cardHtml(r, favPages.has(r.page), viewKey)).join("");
+  const frag = document.createDocumentFragment();
+  const cards = [...holder.children];
+  // The imgs come from the holder, not the live box (round 17): the box
+  // is a flat grid holding every tab's cards, so box.querySelectorAll
+  // would return the other tabs' imgs too — and a per-card querySelector
+  // here would be one call per card (600 in the BI1 drain), breaking the
+  // optimizer's "0 queries while rendering" pin. The holder is detached
+  // and holds only this render's cards, so one querySelectorAll on it
+  // returns exactly this view's imgs, in order. Read it BEFORE the cards
+  // are moved into the fragment below (the holder is empty after that).
+  const imgs = [...holder.querySelectorAll("img")];
+  for (const c of cards) frag.appendChild(c);
+  box.appendChild(frag);
   // Start full-res upgrades for cards near the viewport (the observer
   // fires for the rest as the user scrolls). Without IntersectionObserver,
   // load everything immediately.
   const observer = getImageObserver();
-  const imgs = box.querySelectorAll(".card img");
   imgs.forEach((img) => {
     if (observer) observer.observe(img);
     else loadFullImage(img);
@@ -3116,7 +3904,9 @@ function renderResults(results, reports, q) {
   // is a direct child of its anchor, which is a direct child of the card
   // (see the template) — two property reads instead of a closest() walk per
   // img, same nodes; the fallback keeps harness-built imgs working.
-  const cards = [...imgs].map((img) => (img.parentElement && img.parentElement.parentElement) || img.closest(".card"));
+  // (The cards array is already in hand here — it is the fragment's
+  // children, in visible order — so the old imgs->cards derivation is
+  // skipped; see the cache loop below.)
   // Cache the nodes imgLoaded needs per image (anchor, card, badge) so a
   // load doesn't walk the DOM three times per image — ~300 traversals
   // saved per 100-card render across the thumb + full loads (measured in
@@ -3141,6 +3931,7 @@ function renderResults(results, reports, q) {
     img._badge = (sib && typeof sib.className === "string" && sib.className.includes("badge-res")) ? sib : null;
   });
   cardByPage = new Map(visible.map((r, i) => [r.page, cards[i]]));
+  if (!favsView) activeView().cardByPage = cardByPage;
   // Restore the loaded marker on rebuilt cards (round 10): a card whose
   // full image already loaded (recorded in loadedPages) shows as loaded
   // immediately, instead of waiting for the observer to re-verify it via
@@ -3149,7 +3940,12 @@ function renderResults(results, reports, q) {
   lastRenderProxyUp = localProxyUp;
   lastRenderFavsView = favsView;
   lastRenderTrendingView = trendingView;
-  restartPreload(imgs);
+  if (!favsView) {
+    activeView().lastRenderProxyUp = lastRenderProxyUp;
+    activeView().lastRenderFavsView = lastRenderFavsView;
+    activeView().lastRenderTrendingView = lastRenderTrendingView;
+  }
+  restartPreload(imgs, activeView());
   applyGridFilter(); // re-assert the grid filter + refresh the counts (round 10)
 }
 
@@ -3158,46 +3954,56 @@ async function search(ev) {
   saveSettings();
   const q = staticEl("query").value.trim();
   if (!q) return;
-  // Generation guard against overlapping loads (see viewSeq above).
-  const seq = ++viewSeq;
-  searchLoading = true; // loadMore must not run while this fetch is in flight
   // A new search shows search results, not the Favorites or Trending view.
   setFavsView(false);
   setTrendingView(false);
+  // The search runs in the ACTIVE tab's search view (round 17): capture
+  // it now — the fetch completes later, possibly after the user switched
+  // tabs, and the results must land in THIS view, never the active one.
+  const v = activeView();
+  // Generation guard against overlapping loads (see viewSeq above): the
+  // generation is per view, so a search in another tab never cancels
+  // this one — only a newer load in THIS view supersedes it.
+  const seq = ++viewSeq;
+  v.seq = seq;
+  v.searchLoading = true; // loadMore must not run while this fetch is in flight
+  v.query = q; // the tab label follows the query from submit, not completion
   // New search session: the preload meter starts over (bytes already
   // downloaded stay downloaded — the meter counts this search's preloads).
-  // Zero the counters AND the stored search entry, or a later round trip
-  // would resurrect the old numbers (see syncPreloadView).
-  preloadSpent = 0;
-  preloadCount = 0;
-  preloadBaseSpent = 0;
-  preloadBaseCount = 0;
-  preloadStateByView.set(preloadViewKey, { spent: 0, count: 0, baseSpent: 0, baseCount: 0 });
+  // Zero the view's counters (round 17): the view object owns them, so
+  // a later round trip can never resurrect the old numbers.
+  v.preloadSpent = 0;
+  v.preloadCount = 0;
+  v.preloadBaseSpent = 0;
+  v.preloadBaseCount = 0;
   // The cached grid counts start over too (round 11): the meter reads
   // the cache, and the old grid's loaded cards must not carry into the
   // new session's "Preloading… 0 / Y". (The updateLoadedFilterButtons
   // call below re-caches the old grid's counts — the old cards are still
   // in the DOM — but the refresh after the skeletons below zeroes the
   // cache again before anything reads it in the busy phase.)
-  cachedLoadedCounts = { total: 0, loaded: 0, pending: 0, loading: 0, loadedBytes: 0, failed: 0 };
+  v.cachedLoadedCounts = { total: 0, loaded: 0, pending: 0, loading: 0, loadedBytes: 0, failed: 0 };
   // New search session: the loaded record starts over too (round 10) —
   // the new results are different cards, and the grid filter re-applies
   // to them as they load. The phase restarts as "loading" when a target
   // is set, so the meter reads "Preloading… 0 / Y" through the busy
   // phase; the grid filter resets to "loaded", the workflow's main view.
-  loadedPages.clear();
-  preloadPhase = preloadTarget() > 0 ? "loading" : "idle";
-  gridFilter = "loaded";
-  updatePreloadMeter();
-  updateLoadedFilterButtons();
+  v.loadedPages = new Set();
+  v.preloadPhase = preloadTarget() > 0 ? "loading" : "idle";
+  v.gridFilter = "loaded";
+  v.needsRender = false;
   // New search session: the load-more state starts over too — the old
   // cursors belong to the old query, and the render cap goes back to the
   // Show limit. Reset here (not when the fetch finishes) so a load-more
   // click racing the new search can't use stale cursors.
-  extraLimit = 0;
-  lastCursors = {};
-  lastSourceState = {};
-  moreLoading = false;
+  v.extraLimit = 0;
+  v.cursors = {};
+  v.sourceState = {};
+  v.moreLoading = false;
+  syncViewGlobals(v);
+  updateTabBar();
+  updatePreloadMeter();
+  updateLoadedFilterButtons();
   renderSiteLinks(q);
 
   const chosen = $$(".source:checked").map((c) => c.value);
@@ -3205,13 +4011,21 @@ async function search(ev) {
   // setStatusReserve): without it the row grows a line when results
   // render and the grid jumps down.
   setStatusReserve(chosen.length);
+  // Round 17: reserve the MEASURED height of the last search's pills
+  // (same width) before the fetch — the CSS rung is an estimate, right
+  // to about a row at its edges, so the measured reserve is what makes
+  // the row exactly its final height. No stored height (first search
+  // ever / width changed) falls back to the rung.
+  applyStoredStatusHeight();
   statusBox().innerHTML = `<span class="status-pill pill-busy"><span class="spinner"></span>Searching ${chosen.length} source${chosen.length === 1 ? "" : "s"}…</span>`;
   // The skeletons replace the cards — discard their in-flight upgrades
-  // first (see discardRenderedCards), or an orphaned probe stalls the
+  // first (see clearViewNodes), or an orphaned probe stalls the
   // preload pump and keeps downloading for a card that is already gone.
-  discardRenderedCards();
-  resultsBox().innerHTML = Array.from({ length: 8 }, () =>
-    `<div class="skeleton" aria-hidden="true"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>`).join("");
+  // The skeletons are tagged with the view's key (round 17): the grid is
+  // flat across tabs, so innerHTML would wipe every tab's nodes.
+  clearViewNodes(v);
+  appendViewHtml(v, Array.from({ length: 8 }, () =>
+    `<div class="skeleton" aria-hidden="true"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>`).join(""));
   // The skeletons replace the cards — refresh the counts NOW, not at
   // render (round 11 debugger, BA1/BA2): the reset above re-cached the
   // OLD grid's counts (the old cards were still in the DOM), and the
@@ -3221,11 +4035,12 @@ async function search(ev) {
   // skeletons showing "Loaded (N)" for cards that are gone. With the
   // skeletons in the DOM the counts are zero and the row hides, so the
   // busy phase reads "Preloading… 0 / Y" and no stale filter counts.
-  updateLoadedFilterButtons();
+  updateLoadedFilterButtons(v);
   // The skeletons replace the cards — drop the sort-only cache (its entries
   // are detached; the isConnected check in renderResults would reject them,
   // but there is no reason to keep holding them).
   cardByPage = new Map();
+  v.cardByPage = cardByPage;
   // The skeletons replace the cards — hide Load more until the new results
   // render. (updateLoadMoreButton can't do this: it derives from the last
   // render's counts, which are still the previous search's here.)
@@ -3274,29 +4089,40 @@ async function search(ev) {
         hiddenScope: items.hiddenScope,
         via: items.via || "",
         empty: !!items.empty,
+        // The wildcard the initial search fell back to (round 18), or
+        // null: loadMore rebuilds the pill from this state, so the "via
+        // minimal*" note must survive the rebuild, not just the first
+        // render.
+        fallbackTag: items.fallbackTag || null,
       };
     } catch (err) {
       reports.push([name, err, false, 0]);
     }
   }));
-  searchLoading = false; // the fetch is done (render decision below is separate)
+  v.searchLoading = false; // the fetch is done (render decision below is separate)
   // Keep the fetched set so a sort change can re-render without re-searching.
-  // Assigned only when this load is still the newest: a stale load's data
-  // must not replace the current search's — otherwise a sort change after
-  // an overlapping search would flip the grid back to the old query.
-  if (seq === viewSeq) {
-    lastResults = all;
-    lastReports = reports;
-    lastQuery = q;
-    lastCursors = cursors;
-    lastSourceState = sourceState;
+  // Assigned only when this load is still the newest IN THIS VIEW: a stale
+  // load's data must not replace the current search's — otherwise a sort
+  // change after an overlapping search would flip the grid back to the old
+  // query. The data lands in the view object (round 17), never the
+  // globals: the user may have switched tabs while this fetch was in
+  // flight, and the globals now belong to another tab.
+  if (seq === v.seq) {
+    v.results = all;
+    v.reports = reports;
+    v.query = q;
+    v.cursors = cursors;
+    v.sourceState = sourceState;
   }
-  // Only the newest load renders — and only into the search view. A slow
-  // load finishing after a newer search, a trending load, or a switch to
-  // Favorites must not overwrite the current view with the wrong query's
-  // results.
-  if (seq !== viewSeq || trendingView || favsView) return;
-  renderResults(all, reports, q);
+  // Only the newest load renders — and only into its own view. A slow
+  // load finishing after a newer search in the same view, or after the
+  // user switched tabs / kinds / to Favorites, must not overwrite the
+  // current view with the wrong query's results. A hidden view's data is
+  // stored for the switch (needsRender), which renders it then.
+  if (seq !== v.seq) return;
+  if (v !== activeView() || activeTab.kind !== "search" || favsView) { v.needsRender = true; return; }
+  syncViewGlobals(v);
+  renderResults(v.results, v.reports, v.query);
 }
 
 $("#search-form").addEventListener("submit", search);
@@ -3378,17 +4204,22 @@ const favsToggleBtn = $("#favs-toggle");
 if (favsToggleBtn) favsToggleBtn.addEventListener("click", () => {
   if (favsView) {
     setFavsView(false);
-    if (viewBeforeFavs === "trending" && lastTrendingReports.length) renderTrendingView();
-    else {
-      // Back to Search: mark its tab current again — renderResults below
-      // doesn't touch the tabs, and setTrendingView(false) must run AFTER
-      // setFavsView(false) or the guard leaves no tab active (see below).
-      setTrendingView(false);
+    // Back to the tab's own kind (round 17): the kind never changed
+    // while Favorites was showing, so it IS the view to restore —
+    // trending re-renders from memory, search re-renders its last
+    // results (or the idle state). No viewBeforeFavs needed.
+    if (activeTab.kind === "trending") {
+      renderTrendingView();
+    } else {
+      const v = activeView();
+      if (v.needsRender) {
+        v.needsRender = false;
+        syncViewGlobals(v);
+      }
       if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
-      else { discardRenderedCards(); resultsBox().innerHTML = idleResultsHtml; }
+      else showIdleForActiveView();
     }
   } else {
-    viewBeforeFavs = trendingView ? "trending" : "search";
     renderFavsView();
   }
 });
@@ -3402,8 +4233,18 @@ if (tabSearchBtn) tabSearchBtn.addEventListener("click", () => {
   // correctly refuses to mark it current while Favorites is showing).
   setFavsView(false);
   setTrendingView(false);
+  // A load that finished while this kind was hidden stored its data in
+  // the view object (needsRender) — sync it before rendering, or the
+  // render would use the stale globals. (setTrendingView above already
+  // renders needsRender when the kind actually flips; this covers the
+  // no-flip case — the kind was already search.)
+  const v = activeView();
+  if (v.needsRender) {
+    v.needsRender = false;
+    syncViewGlobals(v);
+  }
   if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
-  else { discardRenderedCards(); resultsBox().innerHTML = idleResultsHtml; }
+  else showIdleForActiveView();
 });
 const tabTrendingBtn = $("#tab-trending");
 if (tabTrendingBtn) tabTrendingBtn.addEventListener("click", () => loadTrending(false));
@@ -3433,7 +4274,15 @@ async function refreshProxyAndRerender() {
   if (!cameUp) return;
   if (favsView) renderFavsView();
   else if (trendingView && lastTrendingReports.length) renderTrendingView();
-  else if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
+  else if (lastReports.length || activeView().needsRender) {
+    // A load that finished while this view was hidden stored its data in
+    // the view object (needsRender) — sync it before re-rendering, or the
+    // render would use the stale globals. (The trending branch is covered
+    // by renderTrendingView, which syncs itself.)
+    const v = activeView();
+    if (v.needsRender) { v.needsRender = false; syncViewGlobals(v); }
+    if (lastReports.length) renderResults(lastResults, lastReports, lastQuery);
+  }
 }
 const recheckBtn = $("#proxy-recheck");
 if (recheckBtn) recheckBtn.addEventListener("click", refreshProxyAndRerender);
@@ -3484,6 +4333,15 @@ function sourceReport(name, items, passing) {
   }
   const hidden = items.hidden || 0;
   const m = minRes();
+  if (items.fallbackTag) {
+    // The results are for the wildcard, not the exact tag — say so (round
+    // 18). Inserted right after the count, so the title reads "70 found ·
+    // via minimal* …" while the visible short pill stays "danbooru 70
+    // found" (the render's /^([\d,]+ found)/ match still takes just the
+    // count). A 0 that fell back reads "0 found · via minimal*" — the
+    // wildcard was tried and also came up empty.
+    msg = msg.replace(/^([\d,]+ found)/, `$1 · via ${items.fallbackTag}`);
+  }
   if (hidden > 0 && m) {
     // Exact counts (Danbooru, Wallhaven) cover the whole database; checked
     // counts (Safebooru, scrapers) cover only the pages actually fetched,
@@ -3518,10 +4376,49 @@ let lastTrendingResults = [];
 let lastTrendingReports = [];
 // Which view the Favorites toggle came from ("search" or "trending"), so
 // toggling back restores it instead of always landing on the last search.
-let viewBeforeFavs = "search";
+// Favorites needs no "view before" memory (round 17): the tab's kind
+// (search or trending) never changes while Favorites is showing, so the
+// back path reads activeTab.kind directly. (favsView itself is declared
+// near setFavsView, line ~3111.)
 
 function setTrendingView(on) {
-  trendingView = on;
+  // Flip the ACTIVE tab's kind (round 17): save the outgoing kind's
+  // runtime, restore the incoming kind's. The data globals (lastResults
+  // / lastTrendingResults) are per-kind mirrors and stay put — both
+  // kinds' data is live at once. Only a real kind change moves state;
+  // the double-setter call (renderFavsView calls setFavsView(true) then
+  // setTrendingView(false)) is a no-op when the kind already matches.
+  const kind = on ? "trending" : "search";
+  if (activeTab.kind !== kind) {
+    saveViewRuntime();
+    activeTab.kind = kind;
+    trendingView = on;
+    restoreViewRuntime();
+    // The tab's label follows its kind (round 17): a flip to Trending
+    // must re-render the tab bar, or the tab keeps showing its old
+    // search query (or "New search") while showing Trending content.
+    updateTabBar();
+    // A load that finished while this kind was hidden stored its data
+    // (needsRender) — render it now that the kind is showing again.
+    // Not while Favorites is showing (it renders its own view right
+    // after); the re-render is a fast-path reorder when the data is
+    // already on screen, so a redundant call costs nothing.
+    if (!favsView && activeView().needsRender) {
+      activeView().needsRender = false;
+      syncViewGlobals(activeView());
+      renderResults(activeView().results, activeView().reports, activeView().query);
+    }
+  } else {
+    trendingView = on;
+  }
+  setTrendingChrome();
+}
+
+// The DOM part of setTrendingView (round 17): nav buttons, the panel,
+// the reserves. Also called by switchTab after restoring the incoming
+// tab (the tab's kind is already set there, so no state moves).
+function setTrendingChrome() {
+  const on = trendingView;
   const s = staticEl("tab-search"), t = staticEl("tab-trending");
   // Favorites is a third view with no tab of its own: renderFavsView calls
   // setTrendingView(false) while favsView is on, and the Search tab must
@@ -3529,9 +4426,9 @@ function setTrendingView(on) {
   // see main:has(#favs-toggle.active)).
   const searchCurrent = !on && !favsView;
   if (s) { s.classList.toggle("active", searchCurrent); s.setAttribute("aria-selected", searchCurrent ? "true" : "false"); }
-  if (t) { t.classList.toggle("active", on); t.setAttribute("aria-selected", on ? "true" : "false"); }
+  if (t) { t.classList.toggle("active", on && !favsView); t.setAttribute("aria-selected", on && !favsView ? "true" : "false"); }
   const panel = staticEl("trending-panel");
-  if (panel) panel.hidden = !on;
+  if (panel) panel.hidden = !on || favsView;
   // Entering Trending: at most two sources, so the 6-source reserve
   // never applies — clear any reserve left by a many-source search
   // (renderTrendingView re-renders final pills directly, with no busy
@@ -3543,32 +4440,44 @@ function setTrendingView(on) {
   // Leaving Trending clears its own phone reserve too (see loadTrending).
   if (on) setStatusReserve(0);
   else statusBox().classList.remove("status-reserved-trending");
-  syncPreloadView();
   applyGridFilter(); // the filter only applies in the search view (round 10)
 }
 
 function renderTrendingView() {
   setTrendingView(true);
   setFavsView(false);
+  // A trending load that finished while this view was hidden stored its
+  // data in the view object (needsRender) — sync it to the globals
+  // before rendering, or the render would use the stale (empty) set.
+  const v = activeView();
+  if (v.needsRender) {
+    v.needsRender = false;
+    syncViewGlobals(v);
+  }
   renderResults(lastTrendingResults, lastTrendingReports, "Trending");
 }
 
 async function loadTrending(force) {
   setTrendingView(true);
   setFavsView(false);
+  // The load runs in the ACTIVE tab's trending view (round 17): capture
+  // it now — the fetch completes later, possibly after the user switched
+  // tabs, and the results must land in THIS view, never the active one.
+  const v = activeView();
   // Already loaded and not forced: re-render from memory, no re-fetch
   // (same as switching back to a previous search).
-  if (!force && lastTrendingReports.length) { renderTrendingView(); return; }
-  if (trendingLoading) return;
-  trendingLoading = true;
+  if (!force && v.reports.length) { renderTrendingView(); return; }
+  if (v.trendingLoading) return;
+  v.trendingLoading = true;
   const seq = ++viewSeq; // generation guard, see search()
+  v.seq = seq;
   // No meter reset here: switching views must not restart the meter (the
   // v5.6 browser test — a fresh Trending load used to zero both counters,
   // destroying the search session's progress). The trending view gets its
-  // own counters, saved and restored by syncPreloadView: a first visit
+  // own counters, saved and restored by the tab engine: a first visit
   // starts at 0, a return visit resumes where it left off, and the search
   // session's progress survives the round trip.
-  updatePreloadMeter();
+  updatePreloadMeter(null, v);
 
   const chosen = $$(".source:checked").map((c) => c.value).filter((n) => TRENDING_SOURCES.includes(n));
   setStatusReserve(chosen.length);
@@ -3580,12 +4489,14 @@ async function loadTrending(force) {
   statusBox().classList.add("status-reserved-trending");
   statusBox().innerHTML = `<span class="status-pill pill-busy"><span class="spinner"></span>Loading what's trending…</span>`;
   // The skeletons replace the cards — discard their in-flight upgrades
-  // first (see discardRenderedCards), or an orphaned probe stalls the
+  // first (see clearViewNodes), or an orphaned probe stalls the
   // preload pump and keeps downloading for a card that is already gone.
-  discardRenderedCards();
-  resultsBox().innerHTML = Array.from({ length: 8 }, () =>
-    `<div class="skeleton" aria-hidden="true"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>`).join("");
+  // Tagged with the view's key (round 17): the grid is flat across tabs.
+  clearViewNodes(v);
+  appendViewHtml(v, Array.from({ length: 8 }, () =>
+    `<div class="skeleton" aria-hidden="true"><div class="skeleton-thumb"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>`).join(""));
   cardByPage = new Map();
+  v.cardByPage = cardByPage;
   // Load more belongs to the search view, not Trending — hide it while
   // the trending cards load (renderResults hides it again once they do).
   const lmBtnT = loadMoreBtn();
@@ -3610,23 +4521,28 @@ async function loadTrending(force) {
     }));
   }
   // Keep the fetched set for back-navigation — but only when this load is
-  // still the newest (see search(): a stale load must not replace the
-  // current view's data).
-  if (seq === viewSeq) {
-    lastTrendingResults = all;
-    lastTrendingReports = reports;
+  // still the newest IN THIS VIEW (see search(): a stale load must not
+  // replace the current view's data). The data lands in the view object
+  // (round 17), never the globals: the user may have switched tabs while
+  // this fetch was in flight.
+  if (seq === v.seq) {
+    v.results = all;
+    v.reports = reports;
   }
   // Reset before the early return below: a stale load must not leave the
   // flag stuck, or every later refresh click would be swallowed.
-  trendingLoading = false;
-  // Only the newest load renders, and only while the Trending view is
-  // still showing (same race as search() above).
-  if (seq !== viewSeq || !trendingView || favsView) return;
+  v.trendingLoading = false;
+  // Only the newest load renders, and only into its own view (same race
+  // as search() above). A hidden view's data is stored for the switch
+  // (needsRender), which renders it then.
+  if (seq !== v.seq) return;
+  if (v !== activeView() || activeTab.kind !== "trending" || favsView) { v.needsRender = true; return; }
+  syncViewGlobals(v);
   // A fresh Trending batch landed: its preload budget starts here (AW1,
   // same as loadMore) — without this, a Paused pump would never resume
   // on the refreshed cards.
-  resetPreloadBatch();
-  renderResults(all, reports, "Trending");
+  resetPreloadBatch(v);
+  renderResults(v.results, v.reports, "Trending");
 }
 
 // ---------- In-site viewer (round 15) ----------
@@ -3866,6 +4782,17 @@ resultsBox().addEventListener("click", (ev) => {
   if (trendingView) loadTrending(true);
   else $("#search-form").requestSubmit();
 });
+// Session tabs (round 17): the first tab is a fresh search tab. Created
+// BEFORE loadSettings (which calls updatePreloadMeter, and the meter
+// reads the active view) — the idle empty state already in #results
+// belongs to its search view, and the bar is rendered and wired here so
+// the first paint already shows the tab.
+activeTab = createTab("search");
+const __idleState = resultsBox().querySelector(".empty-state");
+if (__idleState) __idleState.setAttribute("data-view", viewKey(activeTab, "search"));
+updateTabBar();
+const __sessionTabs = staticEl("session-tabs");
+if (__sessionTabs) __sessionTabs.addEventListener("click", onSessionTabClick);
 loadSettings();
 const idleResultsHtml = resultsBox().innerHTML;
 updateFavsToggle();
@@ -3873,7 +4800,9 @@ updateFavsToggle();
 // Viewer controls (round 15): X / backdrop close, the heart toggles the
 // favorite (and syncs the card's heart behind it), a tag chip closes
 // the viewer and searches the tag. Esc is a document keydown below —
-// it only acts while the viewer is open.
+// it only acts while the viewer is open. Round 17: any other click
+// inside the viewer closes it too (image, caption, figure space) —
+// only links and buttons keep their own behavior.
 const lightboxEl = staticEl("lightbox");
 if (lightboxEl) {
   lightboxEl.addEventListener("click", (ev) => {
@@ -3904,6 +4833,15 @@ if (lightboxEl) {
       $("#search-form").requestSubmit();
       return;
     }
+    // Catch-all close (round 17): the image, the caption, the figure's
+    // empty space — anything that isn't a link or a button closes the
+    // viewer. The Source / Full image anchors are `a` elements and the
+    // X / heart / tag chips are `button`s, so they are excluded here
+    // (and the first three are handled by the branches above). Two
+    // separate closest() calls, not "a,button": the harness shim's
+    // closest() takes a single token, so a comma list would never match
+    // there while working in a real browser.
+    if (!ev.target.closest("a") && !ev.target.closest("button")) closeLightbox();
   });
 }
 document.addEventListener("keydown", (ev) => {

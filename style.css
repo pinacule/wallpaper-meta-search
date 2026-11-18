@@ -384,58 +384,59 @@ code {
   align-items: center;
   gap: 8px;
   min-height: 0;
-  margin: 18px 0 0;
+  margin: 12px 0 0;
 }
 .status-row:empty { display: none; }
 /* Reserved height for the status row while a many-source search loads.
    The row starts with one short busy pill and ends with one pill per
-   source plus total/ratio/limit pills — about 2900px of pills for 7
-   sources at default filters, measured from the v5.7 live run — so
-   without this the row grows from one line to two as results render
-   and the whole grid jumps down ~48px in the same frame the cards
-   appear. The class is set by setStatusReserve() for 6+ sources only,
-   in the same block as the busy pill, so the row is already at its
-   final height before the first source reports in. One pill row is
-   1.2rem of text (0.8rem at body line-height 1.5) + 10px of
+   source plus total/ratio/limit pills, so without this the row grows
+   as results render and the whole grid jumps down in the same frame
+   the cards appear. The class is set by setStatusReserve() for 6+
+   sources only, in the same block as the busy pill, so the row is
+   already at its final height before the first source reports in. One
+   pill row is 1.2rem of text (0.8rem at body line-height 1.5) + 10px of
    padding/border, rows are separated by the 8px row gap, so two rows
    are calc(2.4rem + 28px) and three rows calc(3.6rem + 46px).
-   ROUND 9 (v5.12 browser test): the two-row reserve under-reserves.
-   Packing the real settled pills (8 sources, default 1920x1080+ filter)
-   at central char width (6.5px): the Pages-site set (proxy down, most
-   proxied sources failing) is 2 rows at 1920px but 3 rows at 1280px;
-   the LONG set (proxy up, all succeed, min-res hidden suffixes) is 2
-   rows at 1920px but 3 rows below ~1700px; and with public-proxy via
-   labels ("(via corsfix — public proxy)", the hosted default) it is 3
-   rows even at 1920px — the v5.12 run-2 shift (+52px) is one status
-   row (37px) plus the meter's empty-text growth (see below) and
-   measurement noise. So the base rung is THREE rows: it covers the
-   via-label case at desktop and the LONG case down to 1280px, at the
-   price of ~37px dead space under the busy pill when the settled pills
-   only take two rows. The taller rungs are the same arithmetic for
-   more rows — they are estimates (pill text varies with the query), so
-   each is right to about a row at its edges: a rung that over-reserves
-   leaves dead space, one that under-reserves leaves a smaller residual
-   shift. Above 3000px the pills fit one row, so the reserve switches
-   off entirely. */
+   ROUND 17 (short pills): the pills used to print the whole report
+   inline (via label, purity note, hidden-count suffix) and took 5–6
+   rows at 1440px — the 3-row reserve under-reserved by ~3 rows there,
+   which is the jump the user reported. The pills now show source +
+   found count only ("danbooru 100", detail in the title tooltip), so
+   packing the real settled sets at central char width (6.5px, pill =
+   chars*6.5 + 33) the Pages-site set and the LONG set are both 1 row
+   at 1920px, 2 rows at 1440px and 1280px, and 2 rows at 1024px — the
+   base rung is TWO rows. It covers the worst case (ratio + limit
+   pills on) at 1280px and up; at the high char-width bound (7.2px)
+   the 1024px worst case needs 3 rows, which the <=1024px rung below
+   covers. Above 3000px the pills fit one row, so the reserve switches
+   off entirely. (History: round 9 measured the LONG pills at 3 rows
+   and set the base rung there; round 17's shortening re-bases it.
+   The rung is an estimate — pill text varies with the query — so each
+   is right to about a row at its edges: a rung that over-reserves
+   leaves dead space, one that under-reserves leaves a smaller
+   residual shift.) */
 .status-row.status-reserved {
-  min-height: calc(3.6rem + 46px);
+  min-height: calc(2.4rem + 28px);
   align-content: flex-start;
 }
+@media (max-width: 1024px) {
+  /* Narrower desktops: the short pills need 3 rows below ~1024px
+     (central packing at 740px content is 3 rows for both sets; at
+     600px it is 4, a ~1-row residual in that band, same estimate
+     class as the other rungs). The base 2-row rung covers 1025px
+     and up. */
+  .status-row.status-reserved { min-height: calc(3.6rem + 46px); }
+}
 @media (max-width: 480px) {
-  /* Phones: 8 sources are about 11 pill lines at 412px (the Danbooru
-     pill wraps to two lines and most others take a line each), ~410px —
-     the two-row reserve would leave most of the shift in place.
-     Measured by packing the real settled pills at 412px content width
-     (384px) at central char width (6.5px): the Pages-site set (proxy
-     down, most failing) is 9 lines, the LONG set (proxy up, hidden
-     suffixes) is 11, and LONG with public-proxy via labels is ~13 —
-     so 11 lines is the central estimate, right to about a line either
-     way; a rung that over-reserves leaves dead space, one that
-     under-reserves leaves a smaller residual shift. (Round 9 debug:
-     the old 10-line rung was measured for 7 sources — the 8th source
-     adds about a line; the via case stays ~2 lines short, same
-     estimate class as the search rungs.) */
-  .status-row.status-reserved { min-height: calc(13.2rem + 190px); }
+  /* Phones: 8 short sources are 5 rows at 412px (384px content) in
+     the typical case and 6 with the ratio + limit pills on — packing
+     the real settled sets at central char width (6.5px): Pages-site
+     6, LONG 6. The old 11-line rung was measured for the LONG pills
+     (via labels + hidden suffixes inline); the short pills re-base
+     it to 6 rows. At the high char-width bound the worst case is 7
+     rows, a ~1-row residual, same estimate class as the search
+     rungs. */
+  .status-row.status-reserved { min-height: calc(7.2rem + 100px); }
   /* Trending's own reserve (round 9): Trending has only 2 sources, so
      it never triggers the 6-source reserve — but at phone width its
      settled pills (2 source pills + total) take 2 rows against a 1-row
@@ -498,7 +499,7 @@ code {
 .results {
   columns: 300px;
   column-gap: 10px;
-  margin-top: 14px;
+  margin-top: 10px;
 }
 .results:empty { display: none; }
 .card {
@@ -561,8 +562,18 @@ code {
   display: block;
   /* Contain, never cover: the full image is never cropped or distorted,
      and a thumb whose ratio differs from the reserved one letterboxes on
-     black instead of shifting the card. */
+     black instead of shifting the card. The one exception is a capped
+     portrait card (round 17, .thumb[data-capped="1"] below): its box is
+     3:4 while the image is taller, so cover centre-crops it to fill —
+     the uncropped original is one click away in the viewer. */
   object-fit: contain;
+}
+/* Capped portrait card (round 17): the anchor is clamped to 3:4 while
+   the image is taller — cover crops top and bottom equally to fill the
+   box, instead of letterboxing. The badge still shows the true
+   dimensions and the viewer still opens the full image. */
+.card .thumb[data-capped="1"] img {
+  object-fit: cover;
 }
 /* Shown when every URL for a card failed (see markImageFailed in app.js):
    same reserved box, no removal, no jump — the card's links keep working.
@@ -1163,6 +1174,16 @@ footer p { margin: 0; max-width: 80ch; }
    already pins, so it costs no extra height. */
 .preload-meter .spinner { display: none; }
 .preload-meter.is-loading .spinner { display: inline-block; }
+/* The text takes its share of the line (flex-basis 0) instead of its
+   full content width: with the default basis the text + bar exceed a
+   phone line, so the bar wraps to its own line and the Paused text —
+   the longest meter state — takes 3 lines against the 2-line reserve,
+   a ~21px jump the moment the target is reached (round 17, measured).
+   With basis 0 the bar always shares the text's line, so the meter is
+   at most 2 lines at phone width and 1 line above that, in every
+   state. Desktop is unchanged: the text grows to its content width
+   and the bar sits beside it, as before. */
+.preload-meter-text { flex: 1 1 0; min-width: 0; }
 /* The meter lives above #status, outside the round-4 reserve — when it
    appears or disappears it moves the grid by its full height (~33px at
    desktop: ~21px line + 12px margins), the likeliest cause of the v5.9
@@ -1311,7 +1332,7 @@ main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)):not(
    whenever the grid has cards/skeletons (not Favorites, not Trending —
    the button never shows in Trending, so reserving its slot there would
    be ~54px of permanent dead space above the toplist; AW4). */
-.load-more-row-top { margin: 0 0 12px; }
+.load-more-row-top { margin: 0 0 8px; }
 .load-more-row-top[hidden] { display: none; }
 #load-more-top { margin-top: 0; }
 #load-more-top:disabled { opacity: .5; cursor: default; }
@@ -1320,6 +1341,89 @@ main:has(#results .card, #results .skeleton):not(:has(#favs-toggle.active)):not(
   display: block;
   visibility: hidden;
 }
+
+/* ---------- Session tabs (round 17) ----------
+   One tab per search / trending view, same Wallhaven-style underline
+   language as the Search/Trending switcher below. A tab's label is its
+   query (or "Trending"), truncated by ellipsis; the × closes it (the
+   last tab cannot be closed, so its × is hidden). The bar is always
+   present from first paint, so it never shifts the page. */
+.session-tabs {
+  display: flex;
+  gap: 2px;
+  align-items: flex-end;
+  margin-top: 14px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.session-tabs::-webkit-scrollbar { display: none; }
+.session-tab {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 220px;
+  padding: 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  margin-bottom: -1px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: .92rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.session-tab:hover { color: var(--text); }
+.session-tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--accent-ink);
+}
+.session-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 8px 2px 10px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.session-tab-close {
+  flex: 0 0 auto;
+  padding: 8px 10px 10px 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: .8rem;
+  line-height: 1;
+  opacity: .55;
+  cursor: pointer;
+}
+.session-tab-close:hover { opacity: 1; }
+/* The last tab cannot be closed: its × is hidden (the JS also refuses
+   to close it, so this is only the look). */
+.session-tab:only-of-type .session-tab-close { display: none; }
+.session-tab-new {
+  flex: 0 0 auto;
+  max-width: none;
+  padding: 8px 12px 10px;
+  font-size: 1rem;
+  line-height: 1;
+}
+/* A view's nodes hide with it: the tab switch toggles the hidden
+   attribute on the inactive view's cards, skeletons and empty states.
+   .card / .skeleton / .empty-state set no display of their own, so the
+   UA [hidden] rule would hide them — but this rule makes it explicit
+   and beats the grid-filter display rule, which also targets .card. */
+#results .card[hidden],
+#results .skeleton[hidden],
+#results .empty-state[hidden] { display: none; }
 
 /* ---------- Search / Trending tabs ----------
    Wallhaven-style text tabs: no boxes, just a label with a gold

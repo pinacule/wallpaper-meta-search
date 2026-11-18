@@ -326,7 +326,77 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.20 (round 16 — the viewer that never opened, 2026-11-17)
+## Changes in v5.22 (round 18 — "why so little" + tag fallback, 2026-11-17)
+
+- **Thin results on plain words, explained**: a search for
+  "minimal" returned 185 results because "minimal" is not a tag
+  anywhere — Danbooru has 0 posts tagged `minimal` in its whole
+  database, Safebooru has exactly 1, Zerochan has no such tag.
+  The pool was correct, not broken; the 148 hidden by the ratio
+  filter were landscape shots under a phone-portrait filter.
+- **Single-tag wildcard fallback**: when a one-word search returns
+  a clean 0 on a booru, the app retries once with that word as a
+  wildcard (`minimal` → `minimal*`, which matches `minimalism` —
+  70 safe posts on Danbooru, 107 via the wildcard, verified live).
+  The pill says so (detail "via minimal*" in the tooltip).
+  Single-tag only, one retry, never on errors; Zerochan is
+  excluded (its wildcard returns the same 404).
+- **Zerochan's error message fixed**: a missing tag used to blame
+  the browser check; it now says "no matching tag or empty
+  results" (the challenge page is caught before this line, so a
+  0-item page reaching the adapter is genuinely empty).
+- QA harness 761 checks (737 + 6 "why so little" + 18 fallback),
+  optimizer all green.
+
+## Changes in v5.21 (round 17 — jump fix, in-app tabs, UI polish, viewer click-to-close, 2026-11-17)
+
+- **The jumping bug, fixed for real this time**: the status pills
+  row was under-reserved for the long pills a local run writes —
+  up to +428 px at 640 px width, +130 px at phone width — which
+  the hosted page's short pills hid in live tests. The reserve is
+  now MEASURED: after a search renders, the pills' true height is
+  stored (per viewport width) and the next search reserves exactly
+  that before the fetch, so the row is already at its final height
+  when the pills land. The meter's Paused text also wrapped to a
+  third line at phone width (+21 px) — the bar now always shares
+  the text's line.
+- **In-app tabs**: a tab bar above the search form — "+" opens a
+  new search tab, each tab keeping its own search (or Trending),
+  preload state, meter, filter row, and grid. Switching restores a
+  tab without re-fetching, and a loading tab keeps fetching and
+  preloading while hidden. Favorites stays outside tabs.
+- **Status pills, less ugly**: each pill now shows source + found
+  count only ("Safebooru 100"); the full detail (proxy used,
+  below-resolution counts, failure reasons) moved into the pill's
+  tooltip. Gaps around the pills and Load more tightened, and the
+  reserves re-based on the short pills.
+- **Tall portrait cards capped**: a card renders no taller than
+  3:4 — the 2207×3455 portrait that used to stretch its column
+  ~470 px now renders 400 px with a centre-crop. The badge still
+  shows the true dimensions and the viewer still opens the full
+  uncropped image.
+- **Viewer closes on any click but the buttons**: clicking the
+  image, the caption, or empty space in the viewer closes it; the
+  X, heart, Source / Full image links, and tag chips keep their
+  own behavior.
+- **Debugger pass (2 bugs fixed)**: tab switches leaked the
+  outgoing tab's status-row reserve; and a height stored by the
+  old long pills would have reserved ~500 px of dead space after
+  the update, so the stored height is now versioned
+  (`wms.statusH2`).
+- **Optimizer pass**: the six grid walks now iterate the flat
+  grid's direct children instead of subtree queries — the counts
+  walk runs ~16× faster (8 ms → 0.5 ms at 800 cards) and tab
+  switches ~16× faster (32 ms → 2 ms). Also fixed a tab-tagging
+  bug that could leave a blank grid after restoring an idle view
+  in another tab.
+- QA harness 737 checks (650 + 13 jump + 20 UI + 12
+  viewer-close + 24 tabs + 11 debugger + 7 optimizer),
+  optimizer all green. One QA check flakes occasionally
+  (736/737 on ~2 of 10 runs, unidentified — suspected timing
+  threshold under load); green on re-run.
+
+## Changes in v5.20 (round 16 — the viewer that never opened, 2026-11-17 — pushed as f8efa493)
 
 - **The viewer actually opens now**: v5.18 shipped with the viewer
   dead — clicking a card did nothing at all. Root cause: the
