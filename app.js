@@ -2038,10 +2038,22 @@ function markFullFailed(img, reason) {
 // plus `!_thumbErrored` (the authoritative flag — imgThumbError sets it
 // when the thumb itself errors, and a failed thumb has naturalWidth 0
 // anyway). A thumb that is still loading when the chain exhausts is NOT
-// kept: the chain's last candidate IS the thumb URL, so its probe failing
-// is strong evidence the thumb won't arrive either.
+// kept for a never-loaded card: the chain's last candidate IS the thumb
+// URL, so its probe failing is strong evidence the thumb won't arrive
+// either. But a card that was ALREADY loaded in an earlier render (its
+// page is in the view's loaded record) is different (round 20): its
+// thumbnail delivered once, so a still-loading thumb is a race — the
+// rebuild re-fetched it and it is in flight — not evidence the card is
+// broken. Stripping it would drop a known-good card from the Loaded view
+// on a transient failure, and it never recovers (the pump skips
+// upgradeStarted imgs and the observer already unobserved). Keep it as
+// "Preview only" instead; the thumb's own error path still fails it
+// honestly if the thumb itself errors (see imgThumbError's full-failed
+// backstop).
 function markUpgradeFailed(img, reason) {
   if (!img._thumbErrored && img.complete && img.naturalWidth > 0) {
+    markFullFailed(img, reason);
+  } else if (!img._thumbErrored && viewOfImg(img).loadedPages.has(img.dataset.page)) {
     markFullFailed(img, reason);
   } else {
     markImageFailed(img, reason);
@@ -3151,12 +3163,18 @@ function loadFullImage(img, onDone) {
     done("cached");
     return;
   }
-  // This full URL already verified in an earlier render (e.g. a sort
-  // change rebuilt the cards): swap it in directly instead of probing
-  // again. Only the full URL counts — if an alternate loaded last time,
-  // the full is still worth one fresh probe.
-  if (probedFullUrls.has(img.dataset.full)) {
-    img.src = img.dataset.full;
+  // A candidate already verified in an earlier render (e.g. a rebuild
+  // after a sort change): swap it in directly instead of probing again.
+  // The full is checked first, so a verified full still wins; but a
+  // verified alternate counts too (round 20). Re-probing the full for a
+  // card that already settled on its alternate re-charges the batch budget
+  // for an image the user already has, and on a transient failure strips
+  // the card instead of keeping it. The full stays available in the viewer
+  // (displayFull || full), so the grid showing the verified alternate
+  // loses nothing the user can see at card size.
+  const cachedCandidate = candidates.find((u) => probedFullUrls.has(u));
+  if (cachedCandidate) {
+    img.src = cachedCandidate;
     img.style.visibility = "";
     restoreImgAlt(img);
     img.dataset.state = "full";
@@ -3243,8 +3261,33 @@ function imgThumbError(img) {
   // early-return.)
   img._thumbErrored = true;
   // Thumb-only card (Wallpapers.com): there is no cheap fallback to try, so
-  // a failed thumbnail is already a total failure.
-  if (img.dataset.thumbOnly) { markImageFailed(img, "error"); return; }
+  // a failed thumbnail is already a total failure — unless this card was
+  // loaded in an earlier render (round 20): its thumbnail delivered once,
+  // so a single fetch failure is likely transient (flaky proxy, connection
+  // reset), not proof the image is gone. Retry the same URL once (the
+  // round-14 pattern: clear src so the same URL actually re-fetches)
+  // before failing the card; a second failure fails honestly. Gated on
+  // loadedPages so a never-loaded card still fails immediately, as before.
+  // Thumb-only cards have no Retry button, so this automatic retry is
+  // their only recovery — without it a rebuild's thumb re-fetch error
+  // strips a known-good card from the Loaded view for good.
+  if (img.dataset.thumbOnly) {
+    if (!img._thumbRetried && viewOfImg(img).loadedPages.has(img.dataset.page)) {
+      img._thumbRetried = true;
+      const cur = img.getAttribute("src");
+      img.removeAttribute("src");
+      img.src = cur;
+      return;
+    }
+    markImageFailed(img, "error"); return;
+  }
+  // Round 20 backstop for markUpgradeFailed's "Preview only" keep: a card
+  // already showing "Preview only" whose thumbnail now errors has no image
+  // left — fail it honestly. Without this, loadFullImage no-ops (its
+  // upgradeStarted is set) and the card would sit as a blank "Preview
+  // only" box: hidden img, no placeholder, still counted as loaded.
+  const card = img._card || img.closest(".card");
+  if (card && card.classList.contains("full-failed")) { markImageFailed(img, "error"); return; }
   // The visible image IS the full-res one (its probe already succeeded, or
   // the thumb is the full image — WallpaperCave) and it just errored.
   // The probe already downloaded this URL once, so a single fetch failure
@@ -3255,8 +3298,9 @@ function imgThumbError(img) {
   // to its current value is a no-op in browsers). Without the retry, a
   // flaky proxy strips probe-verified cards and the meter's MB falls while
   // the loaded count rises (round 14: the v5.16 browser test, 161 MB ->
-  // 144 MB across Load more). A second failure is a genuine failure and
-  // fails the card as before.
+  // 144 MB across Load more). A second failure is a genuine failure of
+  // the display URL — the card itself only fails if it has nothing to
+  // fall back to (see below).
   if (img.dataset.state === "full") {
     if (!img._fullRetried) {
       img._fullRetried = true;
@@ -3271,7 +3315,34 @@ function imgThumbError(img) {
       img.src = cur;
       return;
     }
-    markImageFailed(img, "error");
+    // Second failure: the display URL failed its fetch twice, so the
+    // probe cache's verdict for it is stale, not the card — evict it, or
+    // the next attempt (Retry, rebuild) re-swaps the same dead URL
+    // without probing and the card can never recover (round 20 debugger:
+    // a stale-verdict card died on every rebuild and even a manual Retry
+    // re-swapped the dead URL, 0 new probes). If the card was previously
+    // loaded and has a thumbnail to fall back to, restore it and keep
+    // the card as "Preview only" — the round-20 safety net's case, the
+    // upgrade failing must never hide a working image. The flag is
+    // cleared with the restore: it was set for these display errors, not
+    // for a thumb error, and a kept card must behave exactly like a
+    // first-load "Preview only" card (whose flag is false) — otherwise a
+    // later Retry whose probe chain exhausts would strip it via
+    // markUpgradeFailed even with its thumbnail displaying. The restored
+    // thumb gets its own honest failure path (the backstop above) if it
+    // errors in turn. No thumbnail to restore (the thumb IS the full,
+    // e.g. WallpaperCave) means no image to keep: fail honestly as
+    // before.
+    const cur = img.getAttribute("src") || img.dataset.full;
+    probedFullUrls.delete(cur);
+    if (img._thumbSrc && img._thumbSrc !== cur && viewOfImg(img).loadedPages.has(img.dataset.page)) {
+      img._thumbErrored = false;
+      img.removeAttribute("src");
+      img.src = img._thumbSrc;
+      markFullFailed(img, "error");
+    } else {
+      markImageFailed(img, "error");
+    }
     return;
   }
   // Single candidate and the thumb already IS it (WallpaperCave, no alts):
@@ -3601,6 +3672,13 @@ function buildCard(r, fav, viewKey) {
   const img = card.querySelector("img");
   img._anchor = img.parentElement || img.closest("a.thumb");
   img._card = card;
+  // The thumbnail URL at build time (round 20 debugger): the card's
+  // fallback image. loadFullImage swaps the src to the full/alternate,
+  // so once an upgrade starts the thumb URL is otherwise unrecoverable —
+  // and a display fetch that fails twice needs it to fall back to
+  // "Preview only" instead of failing the card outright (see the
+  // state="full" branch in imgThumbError).
+  img._thumbSrc = img.getAttribute("src");
   // Reverse cache (round 11): loadedCardCounts needs each card's img on
   // every card state change, and a per-card querySelector there is O(n)
   // calls per load — O(n²) over a pump run, which trips the optimizer's
@@ -3980,6 +4058,7 @@ function renderResults(results, reports, q) {
   imgs.forEach((img, i) => {
     img._anchor = img.parentElement || img.parent || img.closest("a.thumb");
     img._card = cards[i];
+    img._thumbSrc = img.getAttribute("src"); // round 20 debugger: see buildCard
     cards[i]._img = img;
     const sib = img.nextElementSibling;
     img._badge = (sib && typeof sib.className === "string" && sib.className.includes("badge-res")) ? sib : null;
@@ -4774,6 +4853,7 @@ resultsBox().addEventListener("click", (ev) => {
     // state="full" branch in imgThumbError): without this, a retried card
     // that errors once more would fail immediately instead of retrying.
     img._fullRetried = false;
+    img._thumbRetried = false; // round 20: same, for a thumb-only card's one thumb retry
     retryBtn.style.display = "none";
     // Clear the "Preview only" state too (see markFullFailed): a card
     // whose upgrade failed but whose thumbnail was kept shows the badge

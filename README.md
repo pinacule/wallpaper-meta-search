@@ -326,7 +326,60 @@ back to the Search tab, the term in the box, submitted. The first visit
 to Trending fetches live; going back later re-renders from memory, and
 the ↻ Refresh button forces a fresh load.
 
-## Changes in v5.23 (round 19 — Trending "duplicates" + page-keyed dedupe, 2026-11-18)
+## Changes in v5.24 (round 20 — loaded cards stripped on rebuild, 2026-11-18)
+
+- **Loaded cards vanishing after Load more, root-caused**: a
+  live test saw only 8 of 19 previously-loaded cards still in
+  the Loaded view after Load more. Proven in the harness: on a
+  full rebuild (Favorites round-trip, new search, limit change)
+  with a transient re-verification failure, alternate-settled
+  and thumb-only cards were stripped permanently (0/4 survived)
+  — the probe cache only recognised the full URL, so the full
+  was re-probed, then the alternate, and both failing while the
+  thumb was still loading failed the card for good; the pump
+  never recovered it. The growing path and full-verified cards
+  were safe. A clean re-probe also re-charged the batch budget
+  (44 MB for 4 already-loaded 10 MB cards).
+- **Fix, 4 sites**: `loadFullImage` now swaps in any verified
+  candidate from the probe cache (alternate counts too — the
+  full stays available in the viewer); `markUpgradeFailed`
+  keeps a previously-loaded card as "Preview only" while its
+  thumb is still loading (a race, not evidence); a
+  previously-loaded thumb-only card gets one thumb retry
+  before failing (it has no Retry button); a "Preview only"
+  card whose thumb then errors fails honestly instead of
+  sitting as a blank box. After the fix the stripped cases
+  survive 4/4 and the re-charge falls to exactly the new
+  batch (44 MB → 4 MB).
+- **Cross-source same-image dedupe, assessed not built**:
+  Danbooru/Safebooru/Gelbooru expose md5, Wallhaven and the
+  scrapers don't — an md5 tier would cover booru↔booru only
+  and would not have caught the live Wallhaven→Danbooru case.
+  The only signal covering that case without downloading bytes
+  is the (width, height, fileSize) triple, Danbooru↔Wallhaven
+  only, with a small false-positive risk. Recommended shape if
+  pursued: md5 tier for boorus + triple tier for
+  Danbooru↔Wallhaven.
+- **Debugger caught 1 more real bug in the fix's own
+  neighbourhood**: a card that settled on its full takes the
+  cached path on rebuild (0 new probes), and if that
+  swapped-in display fetch then failed twice the card DIED
+  — the round-20 net never saw it, and even a manual Retry
+  re-swapped the same dead URL because the verdict was still
+  cached. Fix: the stale verdict is evicted on the failing
+  path, and a previously-loaded card with a distinct thumbnail
+  falls back to it as "Preview only" (the thumbnail URL is
+  now recorded at build time). The optimizer found nothing
+  left to take and proved the two round-20 layers are not
+  redundant (stripping either one fails exactly its own
+  checks). Open flag, not fixed: a Show-limit cap can push
+  loaded cards out of the DOM while the counts still include
+  them — no data loss (raising the limit restores them with
+  0 new probes), needs a design decision.
+- QA harness 848 checks (781 + 25 + 11 optimizer + 30
+  debugger + 1 pin split), optimizer all green.
+
+## Changes in v5.23 (round 19 — Trending "duplicates" + page-keyed dedupe, 2026-11-18 — pushed as b4ff5d54)
 
 - **Trending "duplicates", investigated**: a live test reported the
   same Danbooru image 6× and the same Wallhaven image 10× in the
